@@ -1,0 +1,1189 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>ADAM スタッフ報酬管理</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --primary:#1a1a1a;--primary-light:#2c2c2c;--primary-dark:#000;
+  --accent:#2D7D5F;--accent-light:#3a9472;
+  --aden:#2B5797;--aden-light:#3a6db5;
+  --sub:#5d6c7d;--sub-light:#7588a0;
+  --noic:#27864a;--noic-light:#34a85c;
+  --resync:#E8913A;--resync-light:#f0a85c;
+  --green:#27864a;--green-light:#34a85c;
+  --red:#c0392b;--red-light:#e74c3c;
+  --bg:#f0f2f5;--card:#fff;--text:#2c3e50;--text-light:#7f8c8d;
+  --border:#e0e3e8;--shadow:0 2px 8px rgba(0,0,0,.08);
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Hiragino Kaku Gothic ProN',Meiryo,sans-serif;background:var(--bg);color:var(--text);-webkit-tap-highlight-color:transparent;overflow-x:hidden}
+.header{position:sticky;top:0;z-index:100;background:linear-gradient(135deg,var(--primary),var(--primary-light));color:#fff;padding:14px 16px 10px;box-shadow:0 2px 12px rgba(0,0,0,.15)}
+.header h1{font-size:15px;font-weight:600;opacity:.9;letter-spacing:.5px}
+.header .subtitle{font-size:12px;opacity:.7;margin-top:2px}
+.month-nav{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:10px}
+.month-nav button{background:rgba(255,255,255,.2);border:none;color:#fff;width:36px;height:36px;border-radius:50%;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.month-nav button:active{background:rgba(255,255,255,.35)}
+.month-nav .month-label{font-size:18px;font-weight:700;min-width:140px;text-align:center}
+.tabs{position:sticky;top:78px;z-index:99;display:flex;background:#fff;border-bottom:2px solid var(--border);box-shadow:0 1px 4px rgba(0,0,0,.05)}
+.tabs button{flex:1;padding:12px 4px;border:none;background:none;font-size:13px;font-weight:600;color:var(--text-light);cursor:pointer;position:relative;transition:.2s}
+.tabs button.active{color:var(--accent)}
+.tabs button.active::after{content:'';position:absolute;bottom:-2px;left:10%;width:80%;height:3px;background:var(--accent);border-radius:2px}
+.main{max-width:680px;margin:0 auto;padding:12px 12px 100px}
+.card{background:var(--card);border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:var(--shadow)}
+.card-title{font-size:14px;font-weight:700;color:var(--accent);margin-bottom:12px;display:flex;align-items:center;gap:6px}
+.summary-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
+.summary-item{background:var(--bg);border-radius:8px;padding:10px;text-align:center;position:relative}
+.summary-item .label{font-size:11px;color:var(--text-light);margin-bottom:4px;font-weight:600}
+.summary-item .value{font-size:18px;font-weight:800}
+.summary-item .sub{font-size:10px;color:var(--text-light);margin-top:2px}
+.summary-item .value.positive{color:var(--green)}
+.summary-item .value.negative{color:var(--red)}
+.summary-item.wide{grid-column:1/-1}
+.summary-item.aden{border-left:4px solid var(--aden)}
+.summary-item.sub-svc{border-left:4px solid var(--sub)}
+.summary-item.noic{border-left:4px solid var(--noic)}
+.summary-item.resync{border-left:4px solid var(--resync)}
+.summary-item.highlight{background:linear-gradient(135deg,var(--accent),var(--accent-light));color:#fff}
+.summary-item.highlight .label{color:rgba(255,255,255,.8)}
+.summary-item.highlight .value{color:#fff}
+.badge{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;color:#fff;vertical-align:middle;margin-right:4px}
+.badge.aden{background:var(--aden)}
+.badge.sub-svc{background:var(--sub)}
+.badge.noic{background:var(--noic)}
+.badge.resync{background:var(--resync)}
+.badge.source-ad{background:#d35400;font-size:9px}
+.badge.source-self{background:#16a085;font-size:9px}
+.client-card{background:var(--card);border-radius:12px;padding:14px;margin-bottom:10px;box-shadow:var(--shadow);border-left:4px solid var(--border)}
+.client-card.aden{border-left-color:var(--aden)}
+.client-card.sub-svc{border-left-color:var(--sub)}
+.client-card.noic{border-left-color:var(--noic)}
+.client-card.resync{border-left-color:var(--resync)}
+.client-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:6px}
+.client-name{font-size:15px;font-weight:700}
+.client-meta{font-size:11px;color:var(--text-light);margin-bottom:8px;line-height:1.6}
+.session-row{display:flex;align-items:center;justify-content:space-between}
+.session-controls{display:flex;align-items:center;gap:8px}
+.session-controls button{width:44px;height:44px;border-radius:50%;border:2px solid var(--border);background:#fff;font-size:22px;font-weight:700;color:var(--accent);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.15s}
+.session-controls button:active:not(:disabled){background:var(--accent);color:#fff;border-color:var(--accent)}
+.session-controls button.minus{color:var(--red)}
+.session-controls button.minus:active:not(:disabled){background:var(--red);border-color:var(--red)}
+.session-controls button:disabled{opacity:.3;cursor:not-allowed}
+.session-controls .count{font-size:24px;font-weight:800;min-width:36px;text-align:center}
+.session-reward{text-align:right}
+.session-reward .amount{font-size:16px;font-weight:700}
+.session-reward .amount.positive{color:var(--green)}
+.session-reward .unit-price{font-size:11px;color:var(--text-light)}
+.price-override{margin-top:8px;padding:8px 10px;background:var(--bg);border-radius:8px;display:flex;align-items:center;gap:8px;font-size:12px}
+.price-override label{margin:0;font-size:11px;color:var(--text-light);font-weight:600;white-space:nowrap}
+.price-override input{padding:4px 8px;font-size:13px;width:90px;border-radius:6px;text-align:right}
+.price-override .reset{background:none;border:none;color:var(--text-light);font-size:11px;cursor:pointer;padding:2px 6px;text-decoration:underline}
+.ticket-bar{display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:6px 10px;background:var(--bg);border-radius:8px;font-size:12px}
+.ticket-bar .ticket-label{color:var(--text-light)}
+.ticket-bar .ticket-count{font-weight:800;font-size:14px}
+.ticket-bar .ticket-count.zero{color:var(--red)}
+.ticket-bar .ticket-add{margin-left:auto;background:var(--accent);color:#fff;border:none;padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;cursor:pointer}
+.ticket-bar .ticket-add:active{opacity:.7}
+.ticket-progress{flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden;margin:0 6px}
+.ticket-progress .fill{height:100%;background:var(--green);border-radius:3px;transition:.3s}
+.ticket-progress .fill.warn{background:var(--resync)}
+.ticket-progress .fill.empty{background:var(--red)}
+.btn{display:block;width:100%;padding:14px;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;text-align:center;transition:.15s}
+.btn:active{transform:scale(.98)}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-accent{background:var(--resync);color:#fff}
+.btn-danger{background:var(--red);color:#fff}
+.btn-outline{background:#fff;color:var(--accent);border:2px solid var(--accent)}
+.btn-lock{background:var(--green);color:#fff}
+.btn-unlock{background:var(--resync);color:#fff}
+.btn+.btn{margin-top:8px}
+.btn-sm{padding:8px 16px;font-size:13px;width:auto;display:inline-block}
+input,select{width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:15px;font-family:inherit;background:#fff;color:var(--text);-webkit-appearance:none}
+input:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(45,125,95,.12)}
+label{display:block;font-size:12px;font-weight:600;color:var(--text-light);margin-bottom:4px}
+.form-group{margin-bottom:14px}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.lock-banner{background:linear-gradient(135deg,var(--green),var(--green-light));color:#fff;padding:12px 16px;border-radius:10px;text-align:center;margin-bottom:12px;font-size:13px;font-weight:600}
+.lock-banner .icon{font-size:20px;display:block;margin-bottom:4px}
+.report-table{width:100%;border-collapse:collapse;font-size:13px}
+.report-table th{background:var(--primary);color:#fff;padding:8px 6px;text-align:center;font-weight:600;font-size:11px}
+.report-table td{padding:8px 6px;border-bottom:1px solid var(--border);text-align:center}
+.report-table tr:last-child td{border-bottom:none}
+.report-table .total-row{background:var(--bg);font-weight:700}
+.report-table .name-col{text-align:left;font-weight:600}
+.section-title{font-size:13px;font-weight:700;color:var(--text);margin:16px 0 8px;padding:6px 10px;border-radius:6px;background:var(--bg);display:flex;align-items:center;gap:8px}
+.section-title.aden{border-left:4px solid var(--aden)}
+.section-title.sub-svc{border-left:4px solid var(--sub)}
+.section-title.noic{border-left:4px solid var(--noic)}
+.section-title.resync{border-left:4px solid var(--resync)}
+.empty-state{text-align:center;padding:40px 20px;color:var(--text-light)}
+.empty-state .icon{font-size:40px;margin-bottom:12px}
+.empty-state p{font-size:14px}
+.lock-screen{position:fixed;inset:0;z-index:9999;background:linear-gradient(135deg,var(--primary-dark),var(--primary));display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff}
+.lock-screen.hidden{display:none}
+.lock-title{font-size:18px;font-weight:700;margin-bottom:8px;letter-spacing:2px}
+.lock-subtitle{font-size:13px;opacity:.7;margin-bottom:24px}
+.pin-dots{display:flex;gap:12px;margin-bottom:24px}
+.pin-dot{width:16px;height:16px;border-radius:50%;border:2px solid rgba(255,255,255,.5);transition:.2s}
+.pin-dot.filled{background:#fff;border-color:#fff}
+.pin-pad{display:grid;grid-template-columns:repeat(3,72px);gap:10px}
+.pin-key{width:72px;height:56px;border:none;border-radius:12px;background:rgba(255,255,255,.15);color:#fff;font-size:24px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.15s}
+.pin-key:active{background:rgba(255,255,255,.3)}
+.pin-key.del{font-size:14px;font-weight:700}
+.pin-key.empty{background:transparent;cursor:default}
+.pin-error{color:#ff6b6b;font-size:13px;min-height:20px;margin-top:12px;text-align:center}
+.role-switch{margin-top:20px;display:flex;gap:10px}
+.role-switch button{padding:8px 20px;border-radius:20px;border:1.5px solid rgba(255,255,255,.4);background:transparent;color:rgba(255,255,255,.7);font-size:13px;font-weight:600;cursor:pointer;transition:.15s}
+.role-switch button.active{background:rgba(255,255,255,.2);border-color:#fff;color:#fff}
+.modal-overlay{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.5);display:flex;align-items:flex-end;justify-content:center;opacity:0;pointer-events:none;transition:.25s}
+.modal-overlay.show{opacity:1;pointer-events:all}
+.modal{background:#fff;border-radius:16px 16px 0 0;width:100%;max-width:680px;max-height:85vh;overflow-y:auto;padding:20px 16px 32px;transform:translateY(100%);transition:.3s}
+.modal-overlay.show .modal{transform:translateY(0)}
+.modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.modal-header h2{font-size:17px;font-weight:700}
+.modal-close{width:32px;height:32px;border-radius:50%;border:none;background:var(--bg);font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.delete-zone{margin-top:20px;padding-top:16px;border-top:1px solid var(--border)}
+.hidden{display:none!important}
+@media(min-width:600px){.pin-pad{gap:12px}.pin-key{width:80px;height:60px}}
+.settings-section{margin-bottom:20px}
+.settings-section h3{font-size:14px;font-weight:700;color:var(--accent);margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid var(--border)}
+.info-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;gap:8px}
+.info-row:last-child{border-bottom:none}
+.info-row .label{color:var(--text-light)}
+.info-row .val{font-weight:600}
+.tab-content{display:none}
+.tab-content.active{display:block}
+.course-list{margin-top:8px}
+.course-item{display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px}
+.course-item:last-child{border-bottom:none}
+.course-del{color:var(--red);font-size:18px;cursor:pointer;padding:4px 8px;border:none;background:none}
+.sync-status{display:flex;align-items:center;gap:6px;margin-top:4px}
+.sync-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.sync-dot.online{background:#2ecc71}
+.sync-dot.syncing{background:#f39c12;animation:pulse .8s infinite}
+.sync-dot.offline{background:#95a5a6}
+.sync-dot.error{background:#e74c3c}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.sync-text{font-size:11px;opacity:.8}
+.setup-overlay{position:fixed;inset:0;z-index:9998;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:.3s}
+.setup-overlay.open{opacity:1;pointer-events:all}
+.setup-box{background:#fff;border-radius:16px;padding:28px 24px;max-width:440px;width:90%;color:var(--text)}
+.setup-box h2{font-size:18px;margin-bottom:8px;color:var(--accent)}
+.setup-box p{font-size:13px;color:var(--text-light);margin-bottom:16px;line-height:1.5}
+.setup-box input{margin-bottom:12px}
+.setup-box button{width:100%;padding:12px;border:none;border-radius:10px;background:var(--accent);color:#fff;font-size:15px;font-weight:700;cursor:pointer}
+.setup-box button:disabled{opacity:.5}
+.setup-error{color:var(--red);font-size:12px;margin-top:8px;min-height:16px;white-space:pre-wrap}
+.loading-overlay{position:fixed;inset:0;z-index:9997;background:rgba(255,255,255,.9);display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:15px;color:var(--text);opacity:0;pointer-events:none;transition:.2s}
+.loading-overlay.show{opacity:1;pointer-events:all}
+.filter-tabs{display:flex;gap:6px;margin-bottom:12px;overflow-x:auto;padding-bottom:4px}
+.filter-tab{padding:6px 14px;border:1.5px solid var(--border);border-radius:16px;background:#fff;font-size:12px;font-weight:600;color:var(--text-light);cursor:pointer;white-space:nowrap;transition:.15s}
+.filter-tab.active{border-color:var(--accent);background:var(--accent);color:#fff}
+.filter-tab.aden.active{background:var(--aden);border-color:var(--aden)}
+.filter-tab.sub-svc.active{background:var(--sub);border-color:var(--sub)}
+.filter-tab.noic.active{background:var(--noic);border-color:var(--noic)}
+.filter-tab.resync.active{background:var(--resync);border-color:var(--resync)}
+.svc-radio-group{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
+.svc-radio{display:flex;align-items:center;gap:8px;padding:10px 12px;border:1.5px solid var(--border);border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;transition:.15s}
+.svc-radio.active{border-width:2px;padding:9px 11px}
+.svc-radio.aden.active{border-color:var(--aden);background:rgba(43,87,151,.08);color:var(--aden)}
+.svc-radio.sub-svc.active{border-color:var(--sub);background:rgba(93,108,125,.08);color:var(--sub)}
+.svc-radio.noic.active{border-color:var(--noic);background:rgba(39,134,74,.08);color:var(--noic)}
+.svc-radio.resync.active{border-color:var(--resync);background:rgba(232,145,58,.08);color:var(--resync)}
+.svc-radio-dot{width:14px;height:14px;border-radius:50%;border:2px solid currentColor;position:relative;flex-shrink:0}
+.svc-radio.active .svc-radio-dot::after{content:'';position:absolute;inset:2px;background:currentColor;border-radius:50%}
+.source-radio-group{display:flex;gap:8px}
+.source-radio{flex:1;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;text-align:center;color:var(--text-light);transition:.15s}
+.source-radio.active{border-color:var(--accent);background:var(--accent);color:#fff}
+</style>
+</head>
+<body>
+
+<!-- Lock Screen -->
+<div class="lock-screen" id="lockScreen">
+  <div class="lock-title">ADAM スタッフ報酬管理</div>
+  <div class="lock-subtitle" id="lockRole">スタッフ</div>
+  <div class="pin-dots" id="pinDots">
+    <div class="pin-dot"></div><div class="pin-dot"></div><div class="pin-dot"></div><div class="pin-dot"></div>
+  </div>
+  <div class="pin-pad">
+    <button class="pin-key" onclick="pinInput('1')">1</button>
+    <button class="pin-key" onclick="pinInput('2')">2</button>
+    <button class="pin-key" onclick="pinInput('3')">3</button>
+    <button class="pin-key" onclick="pinInput('4')">4</button>
+    <button class="pin-key" onclick="pinInput('5')">5</button>
+    <button class="pin-key" onclick="pinInput('6')">6</button>
+    <button class="pin-key" onclick="pinInput('7')">7</button>
+    <button class="pin-key" onclick="pinInput('8')">8</button>
+    <button class="pin-key" onclick="pinInput('9')">9</button>
+    <button class="pin-key empty"></button>
+    <button class="pin-key" onclick="pinInput('0')">0</button>
+    <button class="pin-key del" onclick="pinDelete()">&#9003;</button>
+  </div>
+  <div class="pin-error" id="pinError"></div>
+  <div class="role-switch">
+    <button id="roleTrainer" class="active" onclick="switchRole('trainer')">スタッフ</button>
+    <button id="roleAdmin" onclick="switchRole('admin')">管理者</button>
+  </div>
+</div>
+
+<!-- Header -->
+<div class="header" id="appHeader">
+  <h1 id="headerTitle">ADAM スタッフ報酬管理</h1>
+  <div class="subtitle" id="headerSubtitle">スタッフ</div>
+  <div class="sync-status"><span class="sync-dot offline" id="syncDot"></span><span class="sync-text" id="syncText">ローカル</span></div>
+  <div class="month-nav">
+    <button onclick="changeMonth(-1)">&#8249;</button>
+    <div class="month-label" id="monthLabel"></div>
+    <button onclick="changeMonth(1)">&#8250;</button>
+  </div>
+</div>
+
+<!-- Tabs -->
+<div class="tabs" id="tabBar">
+  <button class="active" onclick="switchTab('input')">入力</button>
+  <button onclick="switchTab('report')">レポート</button>
+  <button onclick="switchTab('clients')">ゲスト</button>
+  <button id="tabSettings" class="hidden" onclick="switchTab('settings')">設定</button>
+</div>
+
+<!-- Main -->
+<div class="main">
+  <div class="tab-content active" id="tabInput">
+    <div id="lockBanner"></div>
+    <div class="card" id="summaryCard"></div>
+    <div id="filterTabs"></div>
+    <div id="clientList"></div>
+    <div id="lockButton"></div>
+    <button class="btn btn-outline" style="margin-top:12px" onclick="openAddClient()">＋ ゲストを追加</button>
+  </div>
+  <div class="tab-content" id="tabReport"></div>
+  <div class="tab-content" id="tabClients"></div>
+  <div class="tab-content" id="tabSettingsContent"></div>
+</div>
+
+<!-- API URL Setup -->
+<div class="setup-overlay" id="setupOverlay">
+  <div class="setup-box">
+    <h2>クラウド接続 初期設定</h2>
+    <p>Google Apps ScriptのウェブアプリURLを入力してください。<br>管理者からURLを受け取ってください。</p>
+    <input id="apiUrlInput" placeholder="https://script.google.com/macros/s/xxxx/exec" type="url">
+    <button id="apiUrlSaveBtn" onclick="saveApiUrl()">接続テスト＆保存</button>
+    <div class="setup-error" id="setupError"></div>
+    <div style="margin-top:12px;text-align:center"><a href="#" onclick="document.getElementById('setupOverlay').classList.remove('open');return false" style="font-size:13px;color:var(--text-light)">スキップ（ローカルのみ）</a></div>
+  </div>
+</div>
+
+<!-- Loading -->
+<div class="loading-overlay" id="loadingOverlay"><div>読み込み中...</div></div>
+
+<!-- Modal -->
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal" id="modalContent" onclick="event.stopPropagation()"></div>
+</div>
+
+<script>
+/* ===== Storage ===== */
+const SK='adam_staff_salary_v1';
+const API_URL_KEY='adam_staff_api_url';
+let API_URL=localStorage.getItem(API_URL_KEY)||'';
+let saveTimer=null;
+const SAVE_DELAY=1500;
+
+/* ===== Service Definitions ===== */
+const SERVICES={
+  aden:{label:'ADEN',color:'aden',icon:'A',hasRoom:true,defaultPrice:18000,defaultRoom:8000},
+  'sub-svc':{label:'SUB',color:'sub-svc',icon:'S',hasRoom:true,defaultPrice:13000,defaultRoom:5000},
+  noic:{label:'NOIC',color:'noic',icon:'N',hasSource:true,defaultPrice:18000,defaultRewards:{ad:6000,self:10000}},
+  resync:{label:'resync',color:'resync',icon:'R',hasSource:true,defaultPrice:18000,defaultRewards:{ad:6000,self:10000}}
+};
+function svcLabel(s){return SERVICES[s]?SERVICES[s].label:s}
+function svcClass(s){return SERVICES[s]?SERVICES[s].color:''}
+function sourceLabel(src){return src==='ad'?'広告経由':src==='self'?'自己集客':''}
+
+/* ===== Default Data ===== */
+function defaultData(){
+  return{
+    config:{
+      masterPin:'0000',
+      trainerPin:'0000',
+      trainerName:'スタッフ',
+      prices:{
+        aden:{room:8000},
+        'sub-svc':{room:5000},
+        noic:{ad:6000,self:10000},
+        resync:{ad:6000,self:10000}
+      }
+    },
+    clients:[],
+    sessions:{},
+    lockedMonths:{}
+  };
+}
+let D,isMaster=false,currentMonth,pinBuffer='',loginRole='trainer',clientFilter='all';
+
+function migrateData(d){
+  if(!d.config)d.config=defaultData().config;
+  if(d.config.masterPin!=null)d.config.masterPin=String(d.config.masterPin).padStart(4,'0');
+  if(d.config.trainerPin!=null)d.config.trainerPin=String(d.config.trainerPin).padStart(4,'0');
+  if(!d.config.trainerName)d.config.trainerName='スタッフ';
+  if(!d.config.prices)d.config.prices=defaultData().config.prices;
+  if(!d.config.prices.aden)d.config.prices.aden={room:8000};
+  if(!d.config.prices['sub-svc'])d.config.prices['sub-svc']={room:5000};
+  if(!d.config.prices.noic)d.config.prices.noic={ad:6000,self:10000};
+  if(!d.config.prices.resync)d.config.prices.resync={ad:6000,self:10000};
+  if(!d.lockedMonths)d.lockedMonths={};
+  if(!d.clients)d.clients=[];
+  if(!d.sessions)d.sessions={};
+  function fixMonthKeys(obj){
+    if(!obj)return obj;
+    const fixed={};
+    Object.keys(obj).forEach(k=>{
+      let mk=k;
+      if(!/^\d{4}-\d{2}$/.test(k)){
+        const dt=new Date(k);
+        if(!isNaN(dt.getTime()))mk=dt.toISOString().slice(0,7);
+      }
+      if(fixed[mk])Object.assign(fixed[mk],obj[k]);
+      else fixed[mk]=obj[k];
+    });
+    return fixed;
+  }
+  d.sessions=fixMonthKeys(d.sessions);
+  d.lockedMonths=fixMonthKeys(d.lockedMonths);
+  d.clients.forEach(c=>{if(!c.courses)c.courses=[]});
+}
+function load(){
+  try{const s=localStorage.getItem(SK);D=s?JSON.parse(s):defaultData()}
+  catch(e){D=defaultData()}
+  migrateData(D);
+}
+function saveLocal(){localStorage.setItem(SK,JSON.stringify(D))}
+
+/* ===== Cloud Sync ===== */
+function updateSyncStatus(state,text){
+  const dot=document.getElementById('syncDot');
+  const txt=document.getElementById('syncText');
+  if(!dot||!txt)return;
+  dot.className='sync-dot '+state;
+  txt.textContent=text||{online:'接続済み',syncing:'同期中...',offline:'ローカル',error:'接続エラー'}[state]||'';
+}
+async function fetchFromCloud(){
+  if(!API_URL)return null;
+  updateSyncStatus('syncing','読み込み中...');
+  try{
+    const res=await fetch(API_URL+'?action=getData');
+    if(!res.ok)throw new Error('HTTP '+res.status);
+    const data=await res.json();
+    if(data.error)throw new Error(data.error);
+    updateSyncStatus('online','接続済み');
+    return data;
+  }catch(e){
+    console.error('Cloud fetch error:',e);
+    updateSyncStatus('error','接続エラー');
+    return null;
+  }
+}
+async function saveToCloud(){
+  if(!API_URL)return false;
+  updateSyncStatus('syncing','保存中...');
+  try{
+    const res=await fetch(API_URL+'?action=saveData',{
+      method:'POST',
+      headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body:JSON.stringify(D),
+      redirect:'follow'
+    });
+    let result;
+    try{result=await res.json()}catch(e){
+      if(res.ok||res.type==='opaque'||res.redirected){
+        updateSyncStatus('online','保存完了');
+        setTimeout(()=>updateSyncStatus('online','接続済み'),2000);
+        return true;
+      }
+      throw new Error('HTTP '+res.status);
+    }
+    if(result.error)throw new Error(result.error);
+    updateSyncStatus('online','保存完了');
+    setTimeout(()=>updateSyncStatus('online','接続済み'),2000);
+    return true;
+  }catch(e){
+    console.error('Cloud save error:',e);
+    updateSyncStatus('error','保存失敗');
+    return false;
+  }
+}
+function save(){
+  saveLocal();
+  if(API_URL){
+    if(saveTimer)clearTimeout(saveTimer);
+    saveTimer=setTimeout(()=>saveToCloud(),SAVE_DELAY);
+  }
+}
+async function syncFromCloud(){
+  showLoading('サーバーからデータを取得中...');
+  const data=await fetchFromCloud();
+  if(data){
+    migrateData(data);
+    const cloudHasClients=data.clients&&data.clients.length>0;
+    const localHasClients=D.clients&&D.clients.length>0;
+    if(cloudHasClients){
+      D=data;saveLocal();render();alert('最新データを取得しました');
+    }else if(localHasClients){
+      alert('クラウドにゲストデータがありません。ローカルデータを維持し、クラウドへ保存します。');
+      saveToCloud();render();
+    }else{
+      D=data;saveLocal();render();alert('最新データを取得しました');
+    }
+  }else{alert('取得に失敗しました。ローカルデータを使用します。');}
+  hideLoading();
+}
+function showLoading(msg){const o=document.getElementById('loadingOverlay');o.textContent=msg||'読み込み中...';o.classList.add('show')}
+function hideLoading(){document.getElementById('loadingOverlay').classList.remove('show')}
+
+/* ===== API URL Setup ===== */
+async function saveApiUrl(){
+  const url=document.getElementById('apiUrlInput').value.trim();
+  if(!url){document.getElementById('setupError').textContent='URLを入力してください';return}
+  const btn=document.getElementById('apiUrlSaveBtn');
+  btn.disabled=true;btn.textContent='接続テスト中...';
+  document.getElementById('setupError').textContent='';
+  try{
+    const res=await fetch(url+'?action=getData');
+    if(!res.ok)throw new Error('HTTP '+res.status);
+    const data=await res.json();
+    if(data.error)throw new Error(data.error);
+    API_URL=url;localStorage.setItem(API_URL_KEY,url);
+    migrateData(data);D=data;saveLocal();
+    document.getElementById('setupOverlay').classList.remove('open');
+    updateSyncStatus('online','接続済み');
+    render();
+  }catch(e){
+    document.getElementById('setupError').textContent='接続失敗: '+e.message;
+  }finally{btn.disabled=false;btn.textContent='接続テスト＆保存'}
+}
+function changeApiUrl(){
+  document.getElementById('apiUrlInput').value=API_URL||'';
+  document.getElementById('setupError').textContent='';
+  document.getElementById('setupOverlay').classList.add('open');
+}
+
+/* ===== PIN Auth ===== */
+function switchRole(r){
+  loginRole=r;pinBuffer='';updatePinDots();
+  document.getElementById('pinError').textContent='';
+  document.getElementById('roleTrainer').classList.toggle('active',r==='trainer');
+  document.getElementById('roleAdmin').classList.toggle('active',r==='admin');
+  document.getElementById('lockRole').textContent=r==='admin'?'管理者モード':D.config.trainerName;
+}
+function pinInput(n){
+  if(pinBuffer.length>=4)return;
+  pinBuffer+=n;updatePinDots();
+  if(pinBuffer.length===4)setTimeout(checkPin,150);
+}
+function pinDelete(){pinBuffer=pinBuffer.slice(0,-1);updatePinDots();document.getElementById('pinError').textContent=''}
+function updatePinDots(){
+  const dots=document.querySelectorAll('#pinDots .pin-dot');
+  dots.forEach((d,i)=>d.classList.toggle('filled',i<pinBuffer.length));
+}
+function checkPin(){
+  const target=loginRole==='admin'?D.config.masterPin:D.config.trainerPin;
+  if(pinBuffer===target){
+    isMaster=loginRole==='admin';
+    document.getElementById('lockScreen').classList.add('hidden');
+    initApp();
+  }else{
+    document.getElementById('pinError').textContent='PINが違います';
+    pinBuffer='';updatePinDots();
+  }
+}
+async function logout(){
+  isMaster=false;pinBuffer='';updatePinDots();
+  document.getElementById('lockScreen').classList.remove('hidden');
+  document.getElementById('pinError').textContent='';
+  switchRole('trainer');
+  if(API_URL){
+    const data=await fetchFromCloud();
+    if(data){
+      migrateData(data);
+      const cloudHasClients=data.clients&&data.clients.length>0;
+      if(cloudHasClients){D=data;saveLocal();}
+    }
+  }
+}
+
+/* ===== Month Nav ===== */
+function monthKey(d){return d.toISOString().slice(0,7)}
+function monthDisplay(mk){const[y,m]=mk.split('-');return y+'年'+parseInt(m)+'月'}
+function changeMonth(delta){
+  const d=new Date(currentMonth+'-01');
+  d.setMonth(d.getMonth()+delta);
+  currentMonth=monthKey(d);
+  render();
+}
+function isLocked(mk){return!!D.lockedMonths[mk]}
+
+/* ===== Session Helpers ===== */
+function getSessionData(clientId,mk){
+  if(!D.sessions[mk])return null;
+  return D.sessions[mk][clientId]||null;
+}
+function ensureSession(clientId,mk){
+  if(!D.sessions[mk])D.sessions[mk]={};
+  if(!D.sessions[mk][clientId]){
+    D.sessions[mk][clientId]={count:0,sessionPriceOverride:null};
+  }
+  return D.sessions[mk][clientId];
+}
+
+/* ===== Ticket Helpers ===== */
+function getTicketInfo(clientId){
+  const c=D.clients.find(x=>x.id===clientId);
+  if(!c)return{total:0,used:0,remaining:0};
+  const total=c.courses.reduce((s,cr)=>s+cr.total,0);
+  let used=0;
+  Object.keys(D.sessions).forEach(mk=>{
+    if(D.sessions[mk][clientId])used+=D.sessions[mk][clientId].count;
+  });
+  return{total,used,remaining:total-used};
+}
+
+/* ===== Calculation ===== */
+function calcClientMonth(clientId,mk){
+  const c=D.clients.find(x=>x.id===clientId);
+  if(!c)return{count:0,reward:0,unitReward:0,sessionPrice:0};
+  const s=getSessionData(clientId,mk);
+  const count=s?s.count:0;
+  const sessionPrice=(s&&s.sessionPriceOverride!=null)?s.sessionPriceOverride:(c.sessionPrice||0);
+  let unitReward=0,roomFee=0;
+  if(c.service==='aden'){
+    roomFee=D.config.prices.aden.room||0;
+    unitReward=Math.max(0,sessionPrice-roomFee);
+  }else if(c.service==='sub-svc'){
+    roomFee=D.config.prices['sub-svc'].room||0;
+    unitReward=Math.max(0,sessionPrice-roomFee);
+  }else if(c.service==='noic'){
+    unitReward=c.source==='ad'?(D.config.prices.noic.ad||0):(D.config.prices.noic.self||0);
+  }else if(c.service==='resync'){
+    unitReward=c.source==='ad'?(D.config.prices.resync.ad||0):(D.config.prices.resync.self||0);
+  }
+  const reward=count===0?0:unitReward*count;
+  return{count,reward,unitReward,sessionPrice,roomFee,service:c.service,source:c.source};
+}
+function calcMonth(mk){
+  let totalReward=0,totalSessions=0,activeClients=0;
+  const byService={aden:{reward:0,count:0,clients:0},'sub-svc':{reward:0,count:0,clients:0},
+    noic:{reward:0,count:0,clients:0,ad:{reward:0,count:0},self:{reward:0,count:0}},
+    resync:{reward:0,count:0,clients:0,ad:{reward:0,count:0},self:{reward:0,count:0}}};
+  const details=[];
+  D.clients.forEach(c=>{
+    const r=calcClientMonth(c.id,mk);
+    if(r.count>0){
+      totalReward+=r.reward;totalSessions+=r.count;activeClients++;
+      const svc=byService[c.service];
+      if(svc){svc.reward+=r.reward;svc.count+=r.count;svc.clients++;
+        if(c.source&&svc[c.source]){svc[c.source].reward+=r.reward;svc[c.source].count+=r.count;}
+      }
+      details.push({...r,client:c});
+    }
+  });
+  return{totalReward,totalSessions,activeClients,byService,details};
+}
+
+/* ===== Render ===== */
+function render(){
+  document.getElementById('monthLabel').textContent=monthDisplay(currentMonth);
+  renderInput();renderReport();renderClients();
+  if(isMaster)renderSettings();
+}
+
+function renderFilterTabs(){
+  const ft=document.getElementById('filterTabs');
+  const counts={all:0,aden:0,'sub-svc':0,noic:0,resync:0};
+  D.clients.forEach(c=>{counts.all++;if(counts[c.service]!=null)counts[c.service]++;});
+  ft.innerHTML=`<div class="filter-tabs">
+    <button class="filter-tab ${clientFilter==='all'?'active':''}" onclick="setFilter('all')">全て (${counts.all})</button>
+    <button class="filter-tab aden ${clientFilter==='aden'?'active':''}" onclick="setFilter('aden')">ADEN (${counts.aden})</button>
+    <button class="filter-tab sub-svc ${clientFilter==='sub-svc'?'active':''}" onclick="setFilter('sub-svc')">SUB (${counts['sub-svc']})</button>
+    <button class="filter-tab noic ${clientFilter==='noic'?'active':''}" onclick="setFilter('noic')">NOIC (${counts.noic})</button>
+    <button class="filter-tab resync ${clientFilter==='resync'?'active':''}" onclick="setFilter('resync')">resync (${counts.resync})</button>
+  </div>`;
+}
+function setFilter(f){clientFilter=f;render()}
+
+function renderInput(){
+  const mk=currentMonth;
+  const locked=isLocked(mk);
+  const calc=calcMonth(mk);
+
+  const lb=document.getElementById('lockBanner');
+  lb.innerHTML=locked?'<div class="lock-banner"><span class="icon">🔒</span>'+monthDisplay(mk)+' は確定済みです</div>':'';
+
+  const sc=document.getElementById('summaryCard');
+  const bs=calc.byService;
+  sc.innerHTML=`
+    <div class="card-title">📊 ${monthDisplay(mk)} サマリー</div>
+    <div class="summary-grid">
+      <div class="summary-item aden"><div class="label">ADEN</div><div class="value positive">¥${bs.aden.reward.toLocaleString()}</div><div class="sub">${bs.aden.count}回 / ${bs.aden.clients}名</div></div>
+      <div class="summary-item sub-svc"><div class="label">SUB</div><div class="value positive">¥${bs['sub-svc'].reward.toLocaleString()}</div><div class="sub">${bs['sub-svc'].count}回 / ${bs['sub-svc'].clients}名</div></div>
+      <div class="summary-item noic"><div class="label">NOIC</div><div class="value positive">¥${bs.noic.reward.toLocaleString()}</div><div class="sub">広告 ${bs.noic.ad.count}回 / 自己 ${bs.noic.self.count}回</div></div>
+      <div class="summary-item resync"><div class="label">resync</div><div class="value positive">¥${bs.resync.reward.toLocaleString()}</div><div class="sub">広告 ${bs.resync.ad.count}回 / 自己 ${bs.resync.self.count}回</div></div>
+      <div class="summary-item"><div class="label">セッション数</div><div class="value">${calc.totalSessions}回</div></div>
+      <div class="summary-item"><div class="label">対応ゲスト</div><div class="value">${calc.activeClients}名</div></div>
+      <div class="summary-item wide highlight"><div class="label">合計報酬額</div><div class="value" style="font-size:26px">¥${calc.totalReward.toLocaleString()}</div></div>
+    </div>`;
+
+  renderFilterTabs();
+
+  const cl=document.getElementById('clientList');
+  let filteredClients=clientFilter==='all'?D.clients:D.clients.filter(c=>c.service===clientFilter);
+  if(filteredClients.length===0){
+    cl.innerHTML='<div class="empty-state"><div class="icon">👤</div><p>'+(D.clients.length===0?'ゲストを追加してください':'該当するゲストがいません')+'</p></div>';
+  }else{
+    const prevD=new Date(mk+'-01');prevD.setMonth(prevD.getMonth()-1);
+    const prevMk=monthKey(prevD);
+    const sorted=[...filteredClients].sort((a,b)=>{
+      const sa=getSessionData(a.id,prevMk),sb=getSessionData(b.id,prevMk);
+      const ca=sa?sa.count:0,cb=sb?sb.count:0;
+      if(cb!==ca)return cb-ca;
+      return a.name.localeCompare(b.name,'ja');
+    });
+    cl.innerHTML=sorted.map(c=>{
+      const s=ensureSession(c.id,mk);
+      const r=calcClientMonth(c.id,mk);
+      const tk=getTicketInfo(c.id);
+      const hasTickets=tk.total>0;
+      const canAdd=!hasTickets||tk.remaining>0;
+      const pct=hasTickets?Math.min(100,Math.round(tk.used/tk.total*100)):0;
+      const fillClass=hasTickets?(tk.remaining===0?'empty':tk.remaining<=2?'warn':''):'';
+      const svcCls=svcClass(c.service);
+      const isHybridReward=c.service==='aden'||c.service==='sub-svc';
+      const sourceBadge=c.source?'<span class="badge source-'+c.source+'">'+sourceLabel(c.source)+'</span>':'';
+      const overridden=s.sessionPriceOverride!=null&&s.sessionPriceOverride!==c.sessionPrice;
+      return`
+      <div class="client-card ${svcCls}">
+        <div class="client-header">
+          <div><span class="client-name">${esc(c.name)}</span> <span class="badge ${svcCls}">${svcLabel(c.service)}</span>${sourceBadge}</div>
+          <div style="font-size:11px;color:var(--text-light);cursor:pointer" onclick="openEditClient('${c.id}')">編集</div>
+        </div>
+        ${hasTickets?`
+        <div class="ticket-bar">
+          <span class="ticket-label">残り</span>
+          <span class="ticket-count ${tk.remaining===0?'zero':''}">${tk.remaining}回</span>
+          <div class="ticket-progress"><div class="fill ${fillClass}" style="width:${100-pct}%"></div></div>
+          <span class="ticket-label">${tk.used}/${tk.total}</span>
+          <button class="ticket-add" onclick="openAddTicket('${c.id}')">＋追加</button>
+        </div>
+        `:`
+        <div class="ticket-bar">
+          <span class="ticket-label">チケット未設定</span>
+          <button class="ticket-add" onclick="openAddTicket('${c.id}')">＋購入回数を設定</button>
+        </div>
+        `}
+        <div class="client-meta">
+          ${isHybridReward?`セッション料: ¥${r.sessionPrice.toLocaleString()} − ルーム料 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回`:`報酬単価: ¥${r.unitReward.toLocaleString()}/回（${sourceLabel(c.source)}）`}
+        </div>
+        <div class="session-row">
+          <div class="session-controls">
+            <button class="minus" onclick="changeCount('${c.id}',-1)" ${locked&&!isMaster?'disabled':''}>−</button>
+            <span class="count">${s.count}</span>
+            <button onclick="changeCount('${c.id}',1)" ${(locked&&!isMaster)||(!canAdd)?'disabled':''}${!canAdd?' title="チケットがありません"':''}>＋</button>
+          </div>
+          <div class="session-reward">
+            <div class="amount positive">¥${r.reward.toLocaleString()}</div>
+            <div class="unit-price">@¥${r.unitReward.toLocaleString()}/回</div>
+          </div>
+        </div>
+        ${isHybridReward?`
+        <div class="price-override">
+          <label>セッション料金</label>
+          <input type="number" value="${r.sessionPrice}" onchange="changeSessionPrice('${c.id}',this.value)" ${locked&&!isMaster?'disabled':''}>
+          <span style="font-size:11px;color:var(--text-light)">円${overridden?' ※今月のみ':''}</span>
+          ${overridden?`<button class="reset" onclick="resetSessionPrice('${c.id}')">基本に戻す</button>`:''}
+        </div>`:''}
+      </div>`;
+    }).join('');
+  }
+
+  const lbtn=document.getElementById('lockButton');
+  if(locked){
+    lbtn.innerHTML=isMaster?`<button class="btn btn-unlock" onclick="toggleLock()">🔓 ${monthDisplay(mk)} の確定を解除</button>`:'';
+  }else{
+    lbtn.innerHTML=`<button class="btn btn-lock" onclick="toggleLock()">🔒 ${monthDisplay(mk)} を確定する</button>`;
+  }
+}
+
+function renderReport(){
+  const mk=currentMonth;
+  const calc=calcMonth(mk);
+  const el=document.getElementById('tabReport');
+  if(calc.details.length===0){
+    el.innerHTML=`<div class="card"><div class="card-title">📄 ${monthDisplay(mk)} レポート</div><div class="empty-state"><div class="icon">📋</div><p>この月のセッションデータがありません</p></div></div>`;
+    return;
+  }
+  const services=['aden','sub-svc','noic','resync'];
+  let html=`<div class="card"><div class="card-title">📄 ${monthDisplay(mk)} レポート</div>`;
+  services.forEach(svc=>{
+    const list=calc.details.filter(d=>d.client.service===svc);
+    if(list.length===0)return;
+    const isHybrid=svc==='aden'||svc==='sub-svc';
+    html+=`<div class="section-title ${svcClass(svc)}"><span class="badge ${svcClass(svc)}">${svcLabel(svc)}</span>${list.length}名 / ${list.reduce((s,d)=>s+d.count,0)}回</div>`;
+    if(isHybrid){
+      html+=`<table class="report-table"><tr><th>ゲスト</th><th>回数</th><th>セッション料</th><th>ルーム料</th><th>単価</th><th>報酬</th></tr>`;
+      list.forEach(d=>{
+        html+=`<tr><td class="name-col">${esc(d.client.name)}</td><td>${d.count}回</td><td>¥${d.sessionPrice.toLocaleString()}</td><td>¥${d.roomFee.toLocaleString()}</td><td>¥${d.unitReward.toLocaleString()}</td><td style="font-weight:700;color:var(--green)">¥${d.reward.toLocaleString()}</td></tr>`;
+      });
+      const subtotal=list.reduce((s,d)=>s+d.reward,0);
+      html+=`<tr class="total-row"><td class="name-col">小計</td><td>${list.reduce((s,d)=>s+d.count,0)}回</td><td colspan="3"></td><td style="color:var(--green)">¥${subtotal.toLocaleString()}</td></tr></table>`;
+    }else{
+      html+=`<table class="report-table"><tr><th>ゲスト</th><th>流入</th><th>回数</th><th>単価</th><th>報酬</th></tr>`;
+      list.forEach(d=>{
+        html+=`<tr><td class="name-col">${esc(d.client.name)}</td><td><span class="badge source-${d.source}">${sourceLabel(d.source)}</span></td><td>${d.count}回</td><td>¥${d.unitReward.toLocaleString()}</td><td style="font-weight:700;color:var(--green)">¥${d.reward.toLocaleString()}</td></tr>`;
+      });
+      const subtotal=list.reduce((s,d)=>s+d.reward,0);
+      html+=`<tr class="total-row"><td class="name-col">小計</td><td></td><td>${list.reduce((s,d)=>s+d.count,0)}回</td><td></td><td style="color:var(--green)">¥${subtotal.toLocaleString()}</td></tr></table>`;
+    }
+  });
+
+  html+=`<div style="margin-top:16px;padding-top:12px;border-top:2px solid var(--border)">
+    <div class="info-row"><span class="label">ADEN 報酬</span><span class="val" style="color:var(--green)">¥${calc.byService.aden.reward.toLocaleString()}</span></div>
+    <div class="info-row"><span class="label">SUB 報酬</span><span class="val" style="color:var(--green)">¥${calc.byService['sub-svc'].reward.toLocaleString()}</span></div>
+    <div class="info-row"><span class="label">NOIC 報酬</span><span class="val" style="color:var(--green)">¥${calc.byService.noic.reward.toLocaleString()}</span></div>
+    <div class="info-row"><span class="label">resync 報酬</span><span class="val" style="color:var(--green)">¥${calc.byService.resync.reward.toLocaleString()}</span></div>
+    <div class="info-row" style="padding:12px 0;font-size:16px"><span class="label" style="font-size:14px;font-weight:700">合計報酬額</span><span class="val" style="font-size:22px;color:var(--accent)">¥${calc.totalReward.toLocaleString()}</span></div>
+  </div></div>`;
+  el.innerHTML=html;
+}
+
+function renderClients(){
+  const el=document.getElementById('tabClients');
+  if(D.clients.length===0){
+    el.innerHTML='<div class="card"><div class="card-title">👤 ゲスト一覧</div><div class="empty-state"><div class="icon">👤</div><p>ゲストを追加してください</p></div></div><button class="btn btn-outline" onclick="openAddClient()">＋ ゲストを追加</button>';
+    return;
+  }
+  const sorted=[...D.clients].sort((a,b)=>{
+    const so={aden:0,'sub-svc':1,noic:2,resync:3};
+    if(so[a.service]!==so[b.service])return so[a.service]-so[b.service];
+    return a.name.localeCompare(b.name,'ja');
+  });
+  let html='<div class="card"><div class="card-title">👤 ゲスト一覧（'+D.clients.length+'名）</div>';
+  sorted.forEach(c=>{
+    const tk=getTicketInfo(c.id);
+    const sourceBadge=c.source?'<span class="badge source-'+c.source+'">'+sourceLabel(c.source)+'</span>':'';
+    const isHybrid=c.service==='aden'||c.service==='sub-svc';
+    html+=`<div style="padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="openEditClient('${c.id}')">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div><span style="font-weight:700">${esc(c.name)}</span> <span class="badge ${svcClass(c.service)}">${svcLabel(c.service)}</span>${sourceBadge}</div>
+        <div style="font-size:12px;color:var(--text-light)">残${tk.remaining} / ${tk.total}回</div>
+      </div>
+      <div style="font-size:12px;color:var(--text-light);margin-top:2px">
+        ${isHybrid?'セッション料 ¥'+(c.sessionPrice||0).toLocaleString():'報酬単価 ¥'+(c.service==='noic'?(c.source==='ad'?D.config.prices.noic.ad:D.config.prices.noic.self):(c.source==='ad'?D.config.prices.resync.ad:D.config.prices.resync.self)).toLocaleString()+'/回'}
+      </div>
+    </div>`;
+  });
+  html+='</div><button class="btn btn-outline" style="margin-top:12px" onclick="openAddClient()">＋ ゲストを追加</button>';
+  el.innerHTML=html;
+}
+
+function renderSettings(){
+  const el=document.getElementById('tabSettingsContent');
+  let html=`
+    <div class="card settings-section">
+      <h3>👤 スタッフ情報</h3>
+      <div class="form-group"><label>スタッフ名</label><input type="text" value="${esc(D.config.trainerName)}" onchange="updateConfig('trainerName',this.value)"></div>
+    </div>
+    <div class="card settings-section">
+      <h3>💰 ADEN（ルーム差し引き型）</h3>
+      <div class="form-group"><label>ルーム利用料（円/回）</label><input type="number" value="${D.config.prices.aden.room}" onchange="updateConfig('aden_room',this.value)"></div>
+      <div style="font-size:11px;color:var(--text-light)">報酬 = セッション料金 − ルーム利用料</div>
+    </div>
+    <div class="card settings-section">
+      <h3>💰 SUB（ルーム差し引き型）</h3>
+      <div class="form-group"><label>ルーム利用料（円/回）</label><input type="number" value="${D.config.prices['sub-svc'].room}" onchange="updateConfig('sub_room',this.value)"></div>
+      <div style="font-size:11px;color:var(--text-light)">報酬 = セッション料金 − ルーム利用料</div>
+    </div>
+    <div class="card settings-section">
+      <h3>💰 NOIC（固定報酬型）</h3>
+      <div class="form-group"><label>広告経由ゲスト 報酬（円/回）</label><input type="number" value="${D.config.prices.noic.ad}" onchange="updateConfig('noic_ad',this.value)"></div>
+      <div class="form-group"><label>自己集客ゲスト 報酬（円/回）</label><input type="number" value="${D.config.prices.noic.self}" onchange="updateConfig('noic_self',this.value)"></div>
+    </div>
+    <div class="card settings-section">
+      <h3>💰 resync（固定報酬型）</h3>
+      <div class="form-group"><label>広告経由ゲスト 報酬（円/回）</label><input type="number" value="${D.config.prices.resync.ad}" onchange="updateConfig('resync_ad',this.value)"></div>
+      <div class="form-group"><label>自己集客ゲスト 報酬（円/回）</label><input type="number" value="${D.config.prices.resync.self}" onchange="updateConfig('resync_self',this.value)"></div>
+    </div>
+    <div class="card settings-section">
+      <h3>🔑 PIN設定</h3>
+      <div class="form-group"><label>スタッフ PIN（4桁）</label><input type="text" maxlength="4" inputmode="numeric" value="${D.config.trainerPin}" onchange="updateConfig('trainerPin',this.value)"></div>
+      <div class="form-group"><label>管理者 PIN（4桁）</label><input type="text" maxlength="4" inputmode="numeric" value="${D.config.masterPin}" onchange="updateConfig('masterPin',this.value)"></div>
+    </div>
+    <div class="card settings-section">
+      <h3>🔓 確定済み月の管理</h3>`;
+  const lockedKeys=Object.keys(D.lockedMonths).sort().reverse();
+  if(lockedKeys.length===0){
+    html+='<div style="font-size:13px;color:var(--text-light)">確定済みの月はありません</div>';
+  }else{
+    lockedKeys.forEach(mk=>{
+      const dt=new Date(D.lockedMonths[mk].lockedAt);
+      html+=`<div class="info-row"><span>${monthDisplay(mk)}<br><span style="font-size:10px;color:var(--text-light)">${dt.toLocaleDateString('ja-JP')} 確定</span></span><button class="btn-sm btn-accent" onclick="unlockMonth('${mk}')">解除</button></div>`;
+    });
+  }
+  html+=`</div>
+    <div class="card settings-section">
+      <h3>☁️ クラウド接続</h3>
+      <div class="info-row"><span class="label">状態</span><span class="val">${API_URL?'✅ 接続済み':'❌ 未接続（ローカルのみ）'}</span></div>
+      ${API_URL?`<div class="info-row"><span class="label">API URL</span><span class="val" style="font-size:10px;word-break:break-all;max-width:200px">${esc(API_URL.slice(0,50)+'...')}</span></div>`:''}
+      <button class="btn btn-outline" onclick="changeApiUrl()" style="margin-top:8px">${API_URL?'🔄 API URLを変更':'☁️ クラウドに接続'}</button>
+      ${API_URL?`<button class="btn btn-outline" onclick="syncFromCloud()">📡 サーバーから最新データを取得</button>`:''}
+    </div>
+    <div class="card settings-section">
+      <h3>💾 データ管理</h3>
+      <button class="btn btn-outline" onclick="exportData()">📥 データをエクスポート</button>
+      <button class="btn btn-outline" onclick="document.getElementById('importFile').click()">📤 データをインポート</button>
+      <input type="file" id="importFile" accept=".json" style="display:none" onchange="importData(event)">
+      <button class="btn btn-danger" style="margin-top:12px" onclick="if(confirm('全データを削除しますか？この操作は元に戻せません。'))if(confirm('本当に削除しますか？')){localStorage.removeItem(SK);location.reload()}">🗑 全データ削除</button>
+    </div>
+    <button class="btn btn-outline" onclick="logout()" style="margin-top:8px">🔒 ログアウト</button>`;
+  el.innerHTML=html;
+}
+
+/* ===== Actions ===== */
+function changeCount(clientId,delta){
+  const mk=currentMonth;
+  if(isLocked(mk)&&!isMaster){alert('この月は確定済みのため編集できません');return}
+  const s=ensureSession(clientId,mk);
+  const newCount=s.count+delta;
+  if(newCount<0)return;
+  if(delta>0){
+    const tk=getTicketInfo(clientId);
+    if(tk.total>0&&tk.remaining<=0){
+      alert('チケットの残りがありません。\n追加購入してからカウントしてください。');
+      return;
+    }
+  }
+  s.count=newCount;
+  if(s.count===0&&s.sessionPriceOverride==null){
+    delete D.sessions[mk][clientId];
+    if(Object.keys(D.sessions[mk]).length===0)delete D.sessions[mk];
+  }
+  save();render();
+}
+function changeSessionPrice(clientId,val){
+  const mk=currentMonth;
+  if(isLocked(mk)&&!isMaster)return;
+  const s=ensureSession(clientId,mk);
+  const c=D.clients.find(x=>x.id===clientId);
+  const newPrice=parseInt(val)||0;
+  if(c&&newPrice===c.sessionPrice){
+    s.sessionPriceOverride=null;
+  }else{
+    s.sessionPriceOverride=newPrice;
+  }
+  save();render();
+}
+function resetSessionPrice(clientId){
+  const mk=currentMonth;
+  if(isLocked(mk)&&!isMaster)return;
+  const s=ensureSession(clientId,mk);
+  s.sessionPriceOverride=null;
+  if(s.count===0){
+    delete D.sessions[mk][clientId];
+    if(Object.keys(D.sessions[mk]).length===0)delete D.sessions[mk];
+  }
+  save();render();
+}
+function toggleLock(){
+  const mk=currentMonth;
+  if(isLocked(mk)){
+    if(!isMaster){alert('確定解除は管理者のみ可能です');return}
+    if(!confirm(monthDisplay(mk)+'の確定を解除しますか？'))return;
+    delete D.lockedMonths[mk];
+  }else{
+    if(!confirm(monthDisplay(mk)+'を確定しますか？\n確定後は管理者のみ編集可能になります。'))return;
+    D.lockedMonths[mk]={lockedAt:Date.now()};
+  }
+  save();render();
+}
+function unlockMonth(mk){
+  if(!confirm(monthDisplay(mk)+'の確定を解除しますか？'))return;
+  delete D.lockedMonths[mk];save();render();
+}
+function updateConfig(key,val){
+  if(key==='trainerName')D.config.trainerName=String(val||'スタッフ');
+  else if(key==='aden_room')D.config.prices.aden.room=parseInt(val)||0;
+  else if(key==='sub_room')D.config.prices['sub-svc'].room=parseInt(val)||0;
+  else if(key==='noic_ad')D.config.prices.noic.ad=parseInt(val)||0;
+  else if(key==='noic_self')D.config.prices.noic.self=parseInt(val)||0;
+  else if(key==='resync_ad')D.config.prices.resync.ad=parseInt(val)||0;
+  else if(key==='resync_self')D.config.prices.resync.self=parseInt(val)||0;
+  else if(key==='trainerPin')D.config.trainerPin=val;
+  else if(key==='masterPin')D.config.masterPin=val;
+  save();render();
+}
+
+/* ===== Ticket CRUD ===== */
+function openAddTicket(clientId){
+  const c=D.clients.find(x=>x.id===clientId);if(!c)return;
+  const tk=getTicketInfo(clientId);
+  let coursesHtml='';
+  if(c.courses.length>0){
+    coursesHtml='<div style="margin-bottom:14px"><label>購入履歴</label><div class="course-list">';
+    c.courses.forEach((cr,i)=>{
+      const d=new Date(cr.addedAt);
+      coursesHtml+=`<div class="course-item"><span>${d.toLocaleDateString('ja-JP')} — ${cr.total}回</span><button class="course-del" onclick="deleteCourse('${clientId}',${i})" title="削除">×</button></div>`;
+    });
+    coursesHtml+=`</div><div style="font-size:12px;color:var(--text-light);margin-top:4px">合計 ${tk.total}回購入 ／ ${tk.used}回消化 ／ 残り ${tk.remaining}回</div></div>`;
+  }
+  const html=`
+    <div class="modal-header"><h2>🎫 ${esc(c.name)} — チケット追加</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    ${coursesHtml}
+    <div class="form-group"><label>追加する回数</label><input id="tkCount" type="number" placeholder="例: 10" inputmode="numeric" min="1"></div>
+    <button class="btn btn-primary" onclick="saveTicket('${clientId}')">追加する</button>`;
+  openModal(html);
+}
+function saveTicket(clientId){
+  const c=D.clients.find(x=>x.id===clientId);if(!c)return;
+  const count=parseInt(document.getElementById('tkCount').value)||0;
+  if(count<=0){alert('1以上の回数を入力してください');return}
+  c.courses.push({id:'tk_'+Date.now(),total:count,addedAt:Date.now()});
+  save();closeModal();render();
+}
+function deleteCourse(clientId,idx){
+  const c=D.clients.find(x=>x.id===clientId);if(!c)return;
+  const cr=c.courses[idx];if(!cr)return;
+  if(!confirm(cr.total+'回分のチケットを削除しますか？'))return;
+  c.courses.splice(idx,1);
+  save();
+  openAddTicket(clientId);
+}
+
+/* ===== Client CRUD ===== */
+function buildServiceRadios(selectedSvc){
+  return Object.keys(SERVICES).map(svc=>{
+    const cls=svcClass(svc);
+    return `<div class="svc-radio ${cls} ${selectedSvc===svc?'active':''}" onclick="selectService('${svc}')">
+      <div class="svc-radio-dot"></div>
+      <div>${SERVICES[svc].label}</div>
+    </div>`;
+  }).join('');
+}
+let _modalSvc='aden',_modalSrc='ad';
+function selectService(svc){
+  _modalSvc=svc;
+  refreshModalServiceUI();
+}
+function selectSource(src){
+  _modalSrc=src;
+  document.querySelectorAll('.source-radio').forEach(r=>r.classList.toggle('active',r.dataset.src===src));
+}
+function refreshModalServiceUI(){
+  document.querySelectorAll('.svc-radio').forEach(r=>{
+    r.classList.toggle('active',r.querySelector('div:last-child').textContent===SERVICES[_modalSvc].label);
+  });
+  const isHybrid=_modalSvc==='aden'||_modalSvc==='sub-svc';
+  const hasSource=SERVICES[_modalSvc].hasSource;
+  const sourceGroup=document.getElementById('mSourceGroup');
+  if(sourceGroup)sourceGroup.classList.toggle('hidden',!hasSource);
+  const priceGroup=document.getElementById('mPriceGroup');
+  const priceLabel=document.getElementById('mPriceLabel');
+  if(priceGroup&&priceLabel){
+    if(isHybrid){
+      priceGroup.classList.remove('hidden');
+      priceLabel.textContent='セッション料金（円）';
+      const inp=document.getElementById('mPrice');
+      if(inp&&!inp.dataset.userTouched)inp.value=SERVICES[_modalSvc].defaultPrice;
+    }else{
+      priceGroup.classList.add('hidden');
+    }
+  }
+}
+function openAddClient(){
+  _modalSvc=clientFilter==='all'?'aden':clientFilter;
+  _modalSrc='ad';
+  const html=`
+    <div class="modal-header"><h2>ゲストを追加</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <div class="form-group"><label>ゲスト名</label><input id="mName" type="text" placeholder="例: 田中太郎"></div>
+    <div class="form-group"><label>サービス区分</label>
+      <div class="svc-radio-group">${buildServiceRadios(_modalSvc)}</div>
+    </div>
+    <div class="form-group hidden" id="mSourceGroup"><label>流入経路</label>
+      <div class="source-radio-group">
+        <div class="source-radio active" data-src="ad" onclick="selectSource('ad')">広告経由</div>
+        <div class="source-radio" data-src="self" onclick="selectSource('self')">自己集客</div>
+      </div>
+    </div>
+    <div class="form-group" id="mPriceGroup"><label id="mPriceLabel">セッション料金（円）</label><input id="mPrice" type="number" oninput="this.dataset.userTouched=1" value="${SERVICES[_modalSvc].defaultPrice||18000}"></div>
+    <div class="form-group"><label>購入回数（チケット）</label><input id="mTicket" type="number" placeholder="例: 10" inputmode="numeric" min="0"></div>
+    <button class="btn btn-primary" onclick="saveNewClient()">追加する</button>`;
+  openModal(html);
+  setTimeout(refreshModalServiceUI,10);
+}
+function saveNewClient(){
+  const name=document.getElementById('mName').value.trim();
+  if(!name){alert('名前を入力してください');return}
+  const svc=_modalSvc;
+  const src=SERVICES[svc].hasSource?_modalSrc:null;
+  const isHybrid=svc==='aden'||svc==='sub-svc';
+  const price=isHybrid?(parseInt(document.getElementById('mPrice').value)||SERVICES[svc].defaultPrice):SERVICES[svc].defaultPrice;
+  const ticket=parseInt(document.getElementById('mTicket').value)||0;
+  const courses=[];
+  if(ticket>0)courses.push({id:'tk_'+Date.now(),total:ticket,addedAt:Date.now()});
+  D.clients.push({
+    id:'c_'+Date.now()+'_'+Math.random().toString(36).slice(2,6),
+    name,
+    service:svc,
+    source:src,
+    sessionPrice:price,
+    courses,
+    createdAt:Date.now()
+  });
+  save();closeModal();render();
+}
+function openEditClient(id){
+  const c=D.clients.find(x=>x.id===id);if(!c)return;
+  _modalSvc=c.service;
+  _modalSrc=c.source||'ad';
+  const tk=getTicketInfo(id);
+  let coursesHtml='';
+  if(c.courses.length>0){
+    coursesHtml='<div class="form-group"><label>🎫 チケット（購入履歴）</label><div class="course-list">';
+    c.courses.forEach((cr,i)=>{
+      const d=new Date(cr.addedAt);
+      coursesHtml+=`<div class="course-item"><span>${d.toLocaleDateString('ja-JP')} — ${cr.total}回</span><button class="course-del" onclick="deleteCourseInEdit('${id}',${i})" title="削除">×</button></div>`;
+    });
+    coursesHtml+=`</div><div style="font-size:12px;color:var(--text-light);margin-top:4px">合計 ${tk.total}回 ／ 消化 ${tk.used}回 ／ <b>残り ${tk.remaining}回</b></div></div>`;
+  }
+  const isHybrid=c.service==='aden'||c.service==='sub-svc';
+  const hasSource=SERVICES[c.service].hasSource;
+  const html=`
+    <div class="modal-header"><h2>ゲスト編集</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <div class="form-group"><label>ゲスト名</label><input id="eName" type="text" value="${esc(c.name)}"></div>
+    <div class="form-group"><label>サービス区分</label>
+      <div class="svc-radio-group">${buildServiceRadios(c.service)}</div>
+    </div>
+    <div class="form-group ${hasSource?'':'hidden'}" id="mSourceGroup"><label>流入経路</label>
+      <div class="source-radio-group">
+        <div class="source-radio ${_modalSrc==='ad'?'active':''}" data-src="ad" onclick="selectSource('ad')">広告経由</div>
+        <div class="source-radio ${_modalSrc==='self'?'active':''}" data-src="self" onclick="selectSource('self')">自己集客</div>
+      </div>
+    </div>
+    <div class="form-group ${isHybrid?'':'hidden'}" id="mPriceGroup"><label id="mPriceLabel">セッション料金（円）</label><input id="ePrice" type="number" data-user-touched="1" value="${c.sessionPrice||0}"></div>
+    ${coursesHtml}
+    <div class="form-group"><label>🎫 チケット追加（回数）</label><input id="eNewTicket" type="number" placeholder="追加する回数を入力" inputmode="numeric" min="0"></div>
+    <button class="btn btn-primary" onclick="saveEditClient('${c.id}')">保存する</button>
+    <div class="delete-zone"><button class="btn btn-danger" onclick="deleteClient('${c.id}')">このゲストを削除</button></div>`;
+  openModal(html);
+  setTimeout(refreshModalServiceUI,10);
+}
+function deleteCourseInEdit(clientId,idx){
+  const c=D.clients.find(x=>x.id===clientId);if(!c)return;
+  const cr=c.courses[idx];if(!cr)return;
+  if(!confirm(cr.total+'回分のチケットを削除しますか？'))return;
+  c.courses.splice(idx,1);
+  save();openEditClient(clientId);
+}
+function saveEditClient(id){
+  const c=D.clients.find(x=>x.id===id);if(!c)return;
+  c.name=document.getElementById('eName').value.trim();
+  c.service=_modalSvc;
+  c.source=SERVICES[_modalSvc].hasSource?_modalSrc:null;
+  const isHybrid=c.service==='aden'||c.service==='sub-svc';
+  if(isHybrid){
+    const inp=document.getElementById('ePrice');
+    c.sessionPrice=inp?(parseInt(inp.value)||SERVICES[c.service].defaultPrice):SERVICES[c.service].defaultPrice;
+  }else{
+    c.sessionPrice=SERVICES[c.service].defaultPrice;
+  }
+  const newTicket=parseInt(document.getElementById('eNewTicket').value)||0;
+  if(newTicket>0)c.courses.push({id:'tk_'+Date.now(),total:newTicket,addedAt:Date.now()});
+  save();closeModal();render();
+}
+function deleteClient(id){
+  if(!confirm('このゲストを削除しますか？\nセッションデータも削除されます。'))return;
+  D.clients=D.clients.filter(x=>x.id!==id);
+  Object.keys(D.sessions).forEach(mk=>{if(D.sessions[mk][id])delete D.sessions[mk][id]});
+  save();closeModal();render();
+}
+
+/* ===== Export/Import ===== */
+function exportData(){
+  const blob=new Blob([JSON.stringify(D,null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='adam_staff_salary_backup_'+currentMonth+'.json';a.click();
+}
+function importData(e){
+  const f=e.target.files[0];if(!f)return;
+  const reader=new FileReader();
+  reader.onload=function(ev){
+    try{
+      const imported=JSON.parse(ev.target.result);
+      if(!imported.config||!imported.clients){alert('無効なデータです');return}
+      if(!confirm('現在のデータを上書きしますか？'))return;
+      D=imported;migrateData(D);save();render();alert('インポートしました');
+    }catch(err){alert('ファイルの読み込みに失敗しました')}
+  };
+  reader.readAsText(f);e.target.value='';
+}
+
+/* ===== Modal ===== */
+function openModal(html){
+  document.getElementById('modalContent').innerHTML=html;
+  const ov=document.getElementById('modalOverlay');
+  ov.classList.add('show');
+  ov.onmousedown=function(e){if(e.target===ov)closeModal()};
+}
+function closeModal(){
+  const ov=document.getElementById('modalOverlay');
+  ov.classList.remove('show');
+  ov.onmousedown=null;
+}
+
+/* ===== Tab ===== */
+function switchTab(tab){
+  document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('active'));
+  const tabMap={input:'tabInput',report:'tabReport',clients:'tabClients',settings:'tabSettingsContent'};
+  document.getElementById(tabMap[tab]).classList.add('active');
+  const btns=document.querySelectorAll('.tabs button');
+  const idx={input:0,report:1,clients:2,settings:3}[tab];
+  if(btns[idx])btns[idx].classList.add('active');
+  render();
+}
+
+/* ===== Util ===== */
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+
+/* ===== Init ===== */
+function initApp(){
+  document.getElementById('headerSubtitle').textContent=isMaster?'管理者モード':D.config.trainerName;
+  document.getElementById('tabSettings').classList.toggle('hidden',!isMaster);
+  render();
+}
+load();
+currentMonth=monthKey(new Date());
+document.getElementById('monthLabel').textContent=monthDisplay(currentMonth);
+
+(async function boot(){
+  if(API_URL){
+    const data=await fetchFromCloud();
+    if(data){
+      migrateData(data);
+      const cloudHasClients=data.clients&&data.clients.length>0;
+      const localHasClients=D.clients&&D.clients.length>0;
+      if(cloudHasClients){
+        D=data;saveLocal();
+      }else if(localHasClients){
+        console.log('Cloud is empty but local has data — pushing local to cloud');
+        saveToCloud();
+      }else{
+        D=data;saveLocal();
+      }
+    }
+  }else{
+    document.getElementById('setupOverlay').classList.add('open');
+  }
+})();
+</script>
+</body>
+</html>
