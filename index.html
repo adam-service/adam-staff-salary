@@ -808,9 +808,9 @@ function renderInput(){
         ${isHybridReward?`
         <div class="price-override">
           <label>セッション料金</label>
-          <input type="number" value="${r.sessionPrice}" onchange="changeSessionPrice('${c.id}',this.value)" ${locked&&!isMaster?'disabled':''}>
-          <span style="font-size:11px;color:var(--text-light)">円${overridden?' ※今月のみ':''}</span>
-          ${overridden?`<button class="reset" onclick="resetSessionPrice('${c.id}')">基本に戻す</button>`:''}
+          <input type="number" value="${r.sessionPrice}" onchange="changeSessionPrice('${c.id}',this.value)" ${!isMaster?'disabled':''}>
+          <span style="font-size:11px;color:var(--text-light)">円${overridden?' ※今月のみ':''}${!isMaster?' 🔒管理者のみ':''}</span>
+          ${overridden&&isMaster?`<button class="reset" onclick="resetSessionPrice('${c.id}')">基本に戻す</button>`:''}
         </div>`:''}
       </div>`;
     }).join('');
@@ -1019,8 +1019,8 @@ function changeCount(clientId,delta){
   save();render();
 }
 function changeSessionPrice(clientId,val){
+  if(!isMaster){alert('セッション料金の変更は管理者のみ可能です');return}
   const mk=currentMonth;
-  if(isLocked(mk)&&!isMaster)return;
   const s=ensureSession(clientId,mk);
   const c=D.clients.find(x=>x.id===clientId);
   const newPrice=parseInt(val)||0;
@@ -1032,8 +1032,8 @@ function changeSessionPrice(clientId,val){
   save();render();
 }
 function resetSessionPrice(clientId){
+  if(!isMaster){alert('セッション料金の変更は管理者のみ可能です');return}
   const mk=currentMonth;
-  if(isLocked(mk)&&!isMaster)return;
   const s=ensureSession(clientId,mk);
   s.sessionPriceOverride=null;
   if(s.count===0){
@@ -1133,7 +1133,7 @@ function openAddTicket(clientId){
     coursesHtml='<div style="margin-bottom:14px"><label>購入履歴</label><div class="course-list">';
     c.courses.forEach((cr,i)=>{
       const d=new Date(cr.addedAt);
-      coursesHtml+=`<div class="course-item"><span>${d.toLocaleDateString('ja-JP')} — ${cr.total}回</span><button class="course-del" onclick="deleteCourse('${clientId}',${i})" title="削除">×</button></div>`;
+      coursesHtml+=`<div class="course-item"><span>${d.toLocaleDateString('ja-JP')} — ${cr.total}回</span>${isMaster?`<button class="course-del" onclick="deleteCourse('${clientId}',${i})" title="削除">×</button>`:'<span style="font-size:11px;color:var(--text-light)">🔒</span>'}</div>`;
     });
     coursesHtml+=`</div><div style="font-size:12px;color:var(--text-light);margin-top:4px">合計 ${tk.total}回購入 ／ ${tk.used}回消化 ／ 残り ${tk.remaining}回</div></div>`;
   }
@@ -1152,6 +1152,7 @@ function saveTicket(clientId){
   save();closeModal();render();
 }
 function deleteCourse(clientId,idx){
+  if(!isMaster){alert('チケットの削除は管理者のみ可能です');return}
   const c=D.clients.find(x=>x.id===clientId);if(!c)return;
   const cr=c.courses[idx];if(!cr)return;
   if(!confirm(cr.total+'回分のチケットを削除しますか？'))return;
@@ -1265,7 +1266,7 @@ function openEditClient(id){
     coursesHtml='<div class="form-group"><label>🎫 チケット（購入履歴）</label><div class="course-list">';
     c.courses.forEach((cr,i)=>{
       const d=new Date(cr.addedAt);
-      coursesHtml+=`<div class="course-item"><span>${d.toLocaleDateString('ja-JP')} — ${cr.total}回</span><button class="course-del" onclick="deleteCourseInEdit('${id}',${i})" title="削除">×</button></div>`;
+      coursesHtml+=`<div class="course-item"><span>${d.toLocaleDateString('ja-JP')} — ${cr.total}回</span>${isMaster?`<button class="course-del" onclick="deleteCourseInEdit('${id}',${i})" title="削除">×</button>`:'<span style="font-size:11px;color:var(--text-light)">🔒</span>'}</div>`;
     });
     coursesHtml+=`</div><div style="font-size:12px;color:var(--text-light);margin-top:4px">合計 ${tk.total}回 ／ 消化 ${tk.used}回 ／ <b>残り ${tk.remaining}回</b></div></div>`;
   }
@@ -1288,7 +1289,7 @@ function openEditClient(id){
         <div class="source-radio ${_modalSrc==='monitor'?'active':''}" data-src="monitor" onclick="selectSource('monitor')">モニター</div>
       </div>
     </div>
-    <div class="form-group ${editIsHybrid?'':'hidden'}" id="mPriceGroup"><label id="mPriceLabel">セッション料金（円）</label><input id="ePrice" type="number" data-user-touched="1" value="${c.sessionPrice||SERVICES[c.service].defaultPrice||18000}"></div>
+    <div class="form-group ${editIsHybrid?'':'hidden'}" id="mPriceGroup"><label id="mPriceLabel">セッション料金（円）${!isMaster?' <span style="font-size:11px;color:var(--text-light)">🔒 管理者のみ変更可</span>':''}</label><input id="ePrice" type="number" data-user-touched="1" value="${c.sessionPrice||SERVICES[c.service].defaultPrice||18000}" ${!isMaster?'disabled':''}></div>
     ${coursesHtml}
     <div class="form-group"><label>🎫 チケット追加（回数）</label><input id="eNewTicket" type="number" placeholder="追加する回数を入力" inputmode="numeric" min="0"></div>
     <button class="btn btn-primary" onclick="saveEditClient('${c.id}')">保存する</button>
@@ -1297,6 +1298,7 @@ function openEditClient(id){
   setTimeout(refreshModalServiceUI,10);
 }
 function deleteCourseInEdit(clientId,idx){
+  if(!isMaster){alert('チケットの削除は管理者のみ可能です');return}
   const c=D.clients.find(x=>x.id===clientId);if(!c)return;
   const cr=c.courses[idx];if(!cr)return;
   if(!confirm(cr.total+'回分のチケットを削除しますか？'))return;
@@ -1313,8 +1315,11 @@ function saveEditClient(id){
   const isSelfVar=(c.service==='noic'||c.service==='resync')&&c.source==='self';
   const isHybrid=isRoom||isSelfVar;
   if(isHybrid){
-    const inp=document.getElementById('ePrice');
-    c.sessionPrice=inp?(parseInt(inp.value)||SERVICES[c.service].defaultPrice):SERVICES[c.service].defaultPrice;
+    if(isMaster){
+      const inp=document.getElementById('ePrice');
+      c.sessionPrice=inp?(parseInt(inp.value)||SERVICES[c.service].defaultPrice):SERVICES[c.service].defaultPrice;
+    }
+    // スタッフは sessionPrice を変更しない（既存値を維持）
   }else{
     c.sessionPrice=SERVICES[c.service].defaultPrice;
   }
