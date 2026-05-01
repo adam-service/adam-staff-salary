@@ -466,11 +466,17 @@ async function syncFromCloud(){
     const cloudHasClients=data.clients&&data.clients.length>0;
     const localHasClients=D.clients&&D.clients.length>0;
     if(cloudHasClients){
+      if((!data.config.staff||data.config.staff.length===0)&&D.config.staff&&D.config.staff.length>0){
+        data.config.staff=D.config.staff;
+      }
       D=data;saveLocal();render();alert('最新データを取得しました');
     }else if(localHasClients){
       alert('クラウドにゲストデータがありません。ローカルデータを維持し、クラウドへ保存します。');
       saveToCloud();render();
     }else{
+      if((!data.config.staff||data.config.staff.length===0)&&D.config.staff&&D.config.staff.length>0){
+        data.config.staff=D.config.staff;
+      }
       D=data;saveLocal();render();alert('最新データを取得しました');
     }
   }else{alert('取得に失敗しました。ローカルデータを使用します。');}
@@ -602,7 +608,12 @@ async function logout(){
     if(data){
       migrateData(data);
       const cloudHasClients=data.clients&&data.clients.length>0;
-      if(cloudHasClients){D=data;saveLocal();renderStaffSelector();}
+      if(cloudHasClients){
+        if((!data.config.staff||data.config.staff.length===0)&&D.config.staff&&D.config.staff.length>0){
+          data.config.staff=D.config.staff;
+        }
+        D=data;saveLocal();renderStaffSelector();
+      }
     }
   }
 }
@@ -1405,11 +1416,18 @@ renderStaffSelector();
       const cloudHasClients=data.clients&&data.clients.length>0;
       const localHasClients=D.clients&&D.clients.length>0;
       if(cloudHasClients){
+        // クラウドにスタッフが無くローカルにいる場合はローカルを維持
+        if((!data.config.staff||data.config.staff.length===0)&&D.config.staff&&D.config.staff.length>0){
+          data.config.staff=D.config.staff;
+        }
         D=data;saveLocal();
       }else if(localHasClients){
         console.log('Cloud is empty but local has data — pushing local to cloud');
         saveToCloud();
       }else{
+        if((!data.config.staff||data.config.staff.length===0)&&D.config.staff&&D.config.staff.length>0){
+          data.config.staff=D.config.staff;
+        }
         D=data;saveLocal();
       }
     }
