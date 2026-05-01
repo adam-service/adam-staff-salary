@@ -137,6 +137,12 @@ label{display:block;font-size:12px;font-weight:600;color:var(--text-light);margi
 .role-switch{margin-top:20px;display:flex;gap:10px}
 .role-switch button{padding:8px 20px;border-radius:20px;border:1.5px solid rgba(255,255,255,.4);background:transparent;color:rgba(255,255,255,.7);font-size:13px;font-weight:600;cursor:pointer;transition:.15s}
 .role-switch button.active{background:rgba(255,255,255,.2);border-color:#fff;color:#fff}
+.staff-selector{display:flex;flex-direction:column;gap:10px;margin-bottom:24px;min-width:240px;max-width:90%;max-height:300px;overflow-y:auto}
+.staff-selector button{padding:14px 20px;border-radius:12px;border:1.5px solid rgba(255,255,255,.3);background:rgba(255,255,255,.08);color:#fff;font-size:15px;font-weight:600;cursor:pointer;transition:.15s;text-align:center}
+.staff-selector button:active,.staff-selector button:hover{background:rgba(255,255,255,.18);border-color:#fff}
+.staff-selector .empty{color:rgba(255,255,255,.5);font-size:13px;padding:14px;text-align:center;border:1.5px dashed rgba(255,255,255,.3);border-radius:12px;cursor:default;background:transparent}
+.lock-back{margin-top:16px;background:transparent;border:none;color:rgba(255,255,255,.6);font-size:12px;cursor:pointer;padding:6px 12px}
+.lock-back:hover{color:#fff}
 .modal-overlay{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.5);display:flex;align-items:flex-end;justify-content:center;opacity:0;pointer-events:none;transition:.25s}
 .modal-overlay.show{opacity:1;pointer-events:all}
 .modal{background:#fff;border-radius:16px 16px 0 0;width:100%;max-width:680px;max-height:85vh;overflow-y:auto;padding:20px 16px 32px;transform:translateY(100%);transition:.3s}
@@ -204,11 +210,12 @@ label{display:block;font-size:12px;font-weight:600;color:var(--text-light);margi
 <!-- Lock Screen -->
 <div class="lock-screen" id="lockScreen">
   <div class="lock-title">ADAM スタッフ報酬管理</div>
-  <div class="lock-subtitle" id="lockRole">スタッフ</div>
-  <div class="pin-dots" id="pinDots">
+  <div class="lock-subtitle" id="lockRole">スタッフを選択</div>
+  <div class="staff-selector" id="staffSelector"></div>
+  <div class="pin-dots hidden" id="pinDots">
     <div class="pin-dot"></div><div class="pin-dot"></div><div class="pin-dot"></div><div class="pin-dot"></div>
   </div>
-  <div class="pin-pad">
+  <div class="pin-pad hidden" id="pinPad">
     <button class="pin-key" onclick="pinInput('1')">1</button>
     <button class="pin-key" onclick="pinInput('2')">2</button>
     <button class="pin-key" onclick="pinInput('3')">3</button>
@@ -224,9 +231,10 @@ label{display:block;font-size:12px;font-weight:600;color:var(--text-light);margi
   </div>
   <div class="pin-error" id="pinError"></div>
   <div class="role-switch">
-    <button id="roleTrainer" class="active" onclick="switchRole('trainer')">スタッフ</button>
+    <button id="roleStaff" class="active" onclick="switchRole('staff')">スタッフ</button>
     <button id="roleAdmin" onclick="switchRole('admin')">管理者</button>
   </div>
+  <button class="lock-back hidden" id="lockBack" onclick="backToStaffSelect()">← スタッフ選択に戻る</button>
 </div>
 
 <!-- Header -->
@@ -308,8 +316,7 @@ function defaultData(){
   return{
     config:{
       masterPin:'0000',
-      trainerPin:'0000',
-      trainerName:'スタッフ',
+      staff:[],
       prices:{
         aden:{room:8000},
         'sub-svc':{room:5000},
@@ -322,13 +329,29 @@ function defaultData(){
     lockedMonths:{}
   };
 }
-let D,isMaster=false,currentMonth,pinBuffer='',loginRole='trainer',clientFilter='all';
+let D,isMaster=false,currentStaffId=null,currentMonth,pinBuffer='',loginRole='staff',loginStaffId=null,clientFilter='all';
 
 function migrateData(d){
   if(!d.config)d.config=defaultData().config;
   if(d.config.masterPin!=null)d.config.masterPin=String(d.config.masterPin).padStart(4,'0');
-  if(d.config.trainerPin!=null)d.config.trainerPin=String(d.config.trainerPin).padStart(4,'0');
-  if(!d.config.trainerName)d.config.trainerName='スタッフ';
+  // 旧 trainerName/trainerPin を staff[0] に移行
+  if(!d.config.staff)d.config.staff=[];
+  if((d.config.trainerName||d.config.trainerPin)&&d.config.staff.length===0){
+    d.config.staff.push({
+      id:'s_'+Date.now()+'_'+Math.random().toString(36).slice(2,6),
+      name:d.config.trainerName||'スタッフ1',
+      pin:String(d.config.trainerPin||'0000').padStart(4,'0'),
+      createdAt:Date.now()
+    });
+  }
+  delete d.config.trainerName;
+  delete d.config.trainerPin;
+  // staff の正規化
+  d.config.staff.forEach(s=>{
+    if(s.pin!=null)s.pin=String(s.pin).padStart(4,'0');
+    if(!s.id)s.id='s_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
+    if(!s.createdAt)s.createdAt=Date.now();
+  });
   if(!d.config.prices)d.config.prices=defaultData().config.prices;
   if(!d.config.prices.aden)d.config.prices.aden={room:8000};
   if(!d.config.prices['sub-svc'])d.config.prices['sub-svc']={room:5000};
@@ -355,8 +378,19 @@ function migrateData(d){
   }
   d.sessions=fixMonthKeys(d.sessions);
   d.lockedMonths=fixMonthKeys(d.lockedMonths);
-  d.clients.forEach(c=>{if(!c.courses)c.courses=[]});
+  // staffId 未設定の既存ゲストを最初のスタッフに紐付け
+  const defaultStaffId=d.config.staff[0]?d.config.staff[0].id:null;
+  d.clients.forEach(c=>{
+    if(!c.courses)c.courses=[];
+    if(!c.staffId&&defaultStaffId)c.staffId=defaultStaffId;
+  });
 }
+function visibleClients(){
+  if(isMaster)return D.clients;
+  if(!currentStaffId)return [];
+  return D.clients.filter(c=>c.staffId===currentStaffId);
+}
+function findStaff(id){return D.config.staff.find(s=>s.id===id)}
 function load(){
   try{const s=localStorage.getItem(SK);D=s?JSON.parse(s):defaultData()}
   catch(e){D=defaultData()}
@@ -473,12 +507,58 @@ function changeApiUrl(){
 }
 
 /* ===== PIN Auth ===== */
-function switchRole(r){
-  loginRole=r;pinBuffer='';updatePinDots();
+function renderStaffSelector(){
+  const sel=document.getElementById('staffSelector');
+  if(!sel)return;
+  if(loginRole==='admin'){
+    sel.classList.add('hidden');
+    return;
+  }
+  sel.classList.remove('hidden');
+  if(D.config.staff.length===0){
+    sel.innerHTML='<div class="empty">スタッフが未登録です。<br>管理者でログインして追加してください。</div>';
+    return;
+  }
+  sel.innerHTML=D.config.staff.map(s=>`<button onclick="selectStaffForLogin('${s.id}')">${esc(s.name)}</button>`).join('');
+}
+function selectStaffForLogin(id){
+  loginStaffId=id;
+  pinBuffer='';updatePinDots();
   document.getElementById('pinError').textContent='';
-  document.getElementById('roleTrainer').classList.toggle('active',r==='trainer');
+  const s=findStaff(id);
+  document.getElementById('lockRole').textContent=s?s.name:'スタッフ';
+  document.getElementById('staffSelector').classList.add('hidden');
+  document.getElementById('pinDots').classList.remove('hidden');
+  document.getElementById('pinPad').classList.remove('hidden');
+  document.getElementById('lockBack').classList.remove('hidden');
+}
+function backToStaffSelect(){
+  loginStaffId=null;pinBuffer='';updatePinDots();
+  document.getElementById('pinError').textContent='';
+  document.getElementById('lockRole').textContent='スタッフを選択';
+  document.getElementById('pinDots').classList.add('hidden');
+  document.getElementById('pinPad').classList.add('hidden');
+  document.getElementById('lockBack').classList.add('hidden');
+  renderStaffSelector();
+}
+function switchRole(r){
+  loginRole=r;loginStaffId=null;pinBuffer='';updatePinDots();
+  document.getElementById('pinError').textContent='';
+  document.getElementById('roleStaff').classList.toggle('active',r==='staff');
   document.getElementById('roleAdmin').classList.toggle('active',r==='admin');
-  document.getElementById('lockRole').textContent=r==='admin'?'管理者モード':D.config.trainerName;
+  if(r==='admin'){
+    document.getElementById('lockRole').textContent='管理者';
+    document.getElementById('staffSelector').classList.add('hidden');
+    document.getElementById('pinDots').classList.remove('hidden');
+    document.getElementById('pinPad').classList.remove('hidden');
+    document.getElementById('lockBack').classList.add('hidden');
+  }else{
+    document.getElementById('lockRole').textContent='スタッフを選択';
+    document.getElementById('pinDots').classList.add('hidden');
+    document.getElementById('pinPad').classList.add('hidden');
+    document.getElementById('lockBack').classList.add('hidden');
+    renderStaffSelector();
+  }
 }
 function pinInput(n){
   if(pinBuffer.length>=4)return;
@@ -491,9 +571,20 @@ function updatePinDots(){
   dots.forEach((d,i)=>d.classList.toggle('filled',i<pinBuffer.length));
 }
 function checkPin(){
-  const target=loginRole==='admin'?D.config.masterPin:D.config.trainerPin;
+  let target=null;
+  if(loginRole==='admin'){
+    target=D.config.masterPin;
+  }else if(loginStaffId){
+    const s=findStaff(loginStaffId);
+    target=s?s.pin:null;
+  }
+  if(target==null){
+    document.getElementById('pinError').textContent='スタッフを選択してください';
+    pinBuffer='';updatePinDots();return;
+  }
   if(pinBuffer===target){
     isMaster=loginRole==='admin';
+    currentStaffId=isMaster?null:loginStaffId;
     document.getElementById('lockScreen').classList.add('hidden');
     initApp();
   }else{
@@ -502,16 +593,16 @@ function checkPin(){
   }
 }
 async function logout(){
-  isMaster=false;pinBuffer='';updatePinDots();
+  isMaster=false;currentStaffId=null;pinBuffer='';updatePinDots();
   document.getElementById('lockScreen').classList.remove('hidden');
   document.getElementById('pinError').textContent='';
-  switchRole('trainer');
+  switchRole('staff');
   if(API_URL){
     const data=await fetchFromCloud();
     if(data){
       migrateData(data);
       const cloudHasClients=data.clients&&data.clients.length>0;
-      if(cloudHasClients){D=data;saveLocal();}
+      if(cloudHasClients){D=data;saveLocal();renderStaffSelector();}
     }
   }
 }
@@ -584,13 +675,14 @@ function calcClientMonth(clientId,mk){
   const reward=count===0?0:unitReward*count;
   return{count,reward,unitReward,sessionPrice,roomFee,service:c.service,source:c.source};
 }
-function calcMonth(mk){
+function calcMonth(mk,clientList){
+  const list=clientList||visibleClients();
   let totalReward=0,totalSessions=0,activeClients=0;
   const byService={aden:{reward:0,count:0,clients:0},'sub-svc':{reward:0,count:0,clients:0},
-    noic:{reward:0,count:0,clients:0,ad:{reward:0,count:0},self:{reward:0,count:0}},
-    resync:{reward:0,count:0,clients:0,ad:{reward:0,count:0},self:{reward:0,count:0}}};
+    noic:{reward:0,count:0,clients:0,ad:{reward:0,count:0},self:{reward:0,count:0},monitor:{reward:0,count:0}},
+    resync:{reward:0,count:0,clients:0,ad:{reward:0,count:0},self:{reward:0,count:0},monitor:{reward:0,count:0}}};
   const details=[];
-  D.clients.forEach(c=>{
+  list.forEach(c=>{
     const r=calcClientMonth(c.id,mk);
     if(r.count>0){
       totalReward+=r.reward;totalSessions+=r.count;activeClients++;
@@ -614,7 +706,7 @@ function render(){
 function renderFilterTabs(){
   const ft=document.getElementById('filterTabs');
   const counts={all:0,aden:0,'sub-svc':0,noic:0,resync:0};
-  D.clients.forEach(c=>{counts.all++;if(counts[c.service]!=null)counts[c.service]++;});
+  visibleClients().forEach(c=>{counts.all++;if(counts[c.service]!=null)counts[c.service]++;});
   ft.innerHTML=`<div class="filter-tabs">
     <button class="filter-tab ${clientFilter==='all'?'active':''}" onclick="setFilter('all')">全て (${counts.all})</button>
     <button class="filter-tab aden ${clientFilter==='aden'?'active':''}" onclick="setFilter('aden')">ADEN (${counts.aden})</button>
@@ -650,9 +742,10 @@ function renderInput(){
   renderFilterTabs();
 
   const cl=document.getElementById('clientList');
-  let filteredClients=clientFilter==='all'?D.clients:D.clients.filter(c=>c.service===clientFilter);
+  const myClients=visibleClients();
+  let filteredClients=clientFilter==='all'?myClients:myClients.filter(c=>c.service===clientFilter);
   if(filteredClients.length===0){
-    cl.innerHTML='<div class="empty-state"><div class="icon">👤</div><p>'+(D.clients.length===0?'ゲストを追加してください':'該当するゲストがいません')+'</p></div>';
+    cl.innerHTML='<div class="empty-state"><div class="icon">👤</div><p>'+(myClients.length===0?'ゲストを追加してください':'該当するゲストがいません')+'</p></div>';
   }else{
     const prevD=new Date(mk+'-01');prevD.setMonth(prevD.getMonth()-1);
     const prevMk=monthKey(prevD);
@@ -676,10 +769,12 @@ function renderInput(){
       const isHybridReward=isRoomDeduction||isSelfVariable;
       const sourceBadge=c.source?'<span class="badge source-'+c.source+'">'+sourceLabel(c.source)+'</span>':'';
       const overridden=s.sessionPriceOverride!=null&&s.sessionPriceOverride!==c.sessionPrice;
+      const staff=findStaff(c.staffId);
+      const staffBadge=isMaster&&staff?'<span class="badge" style="background:#34495e">'+esc(staff.name)+'</span>':'';
       return`
       <div class="client-card ${svcCls}">
         <div class="client-header">
-          <div><span class="client-name">${esc(c.name)}</span> <span class="badge ${svcCls}">${svcLabel(c.service)}</span>${sourceBadge}</div>
+          <div><span class="client-name">${esc(c.name)}</span> <span class="badge ${svcCls}">${svcLabel(c.service)}</span>${sourceBadge}${staffBadge}</div>
           <div style="font-size:11px;color:var(--text-light);cursor:pointer" onclick="openEditClient('${c.id}')">編集</div>
         </div>
         ${hasTickets?`
@@ -774,19 +869,22 @@ function renderReport(){
 
 function renderClients(){
   const el=document.getElementById('tabClients');
-  if(D.clients.length===0){
+  const myClients=visibleClients();
+  if(myClients.length===0){
     el.innerHTML='<div class="card"><div class="card-title">👤 ゲスト一覧</div><div class="empty-state"><div class="icon">👤</div><p>ゲストを追加してください</p></div></div><button class="btn btn-outline" onclick="openAddClient()">＋ ゲストを追加</button>';
     return;
   }
-  const sorted=[...D.clients].sort((a,b)=>{
+  const sorted=[...myClients].sort((a,b)=>{
     const so={aden:0,'sub-svc':1,noic:2,resync:3};
     if(so[a.service]!==so[b.service])return so[a.service]-so[b.service];
     return a.name.localeCompare(b.name,'ja');
   });
-  let html='<div class="card"><div class="card-title">👤 ゲスト一覧（'+D.clients.length+'名）</div>';
+  let html='<div class="card"><div class="card-title">👤 ゲスト一覧（'+myClients.length+'名）</div>';
   sorted.forEach(c=>{
     const tk=getTicketInfo(c.id);
     const sourceBadge=c.source?'<span class="badge source-'+c.source+'">'+sourceLabel(c.source)+'</span>':'';
+    const staff=findStaff(c.staffId);
+    const staffBadge=isMaster&&staff?'<span class="badge" style="background:#34495e">'+esc(staff.name)+'</span>':'';
     const isRoom=c.service==='aden'||c.service==='sub-svc';
     const isSelfVar=(c.service==='noic'||c.service==='resync')&&c.source==='self';
     let metaText;
@@ -799,7 +897,7 @@ function renderClients(){
     }
     html+=`<div style="padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="openEditClient('${c.id}')">
       <div style="display:flex;justify-content:space-between;align-items:center">
-        <div><span style="font-weight:700">${esc(c.name)}</span> <span class="badge ${svcClass(c.service)}">${svcLabel(c.service)}</span>${sourceBadge}</div>
+        <div><span style="font-weight:700">${esc(c.name)}</span> <span class="badge ${svcClass(c.service)}">${svcLabel(c.service)}</span>${sourceBadge}${staffBadge}</div>
         <div style="font-size:12px;color:var(--text-light)">残${tk.remaining} / ${tk.total}回</div>
       </div>
       <div style="font-size:12px;color:var(--text-light);margin-top:2px">
@@ -813,11 +911,33 @@ function renderClients(){
 
 function renderSettings(){
   const el=document.getElementById('tabSettingsContent');
-  let html=`
-    <div class="card settings-section">
-      <h3>👤 スタッフ情報</h3>
-      <div class="form-group"><label>スタッフ名</label><input type="text" value="${esc(D.config.trainerName)}" onchange="updateConfig('trainerName',this.value)"></div>
-    </div>
+  // スタッフ別月次サマリー
+  const mk=currentMonth;
+  let staffSummaryHtml='';
+  if(D.config.staff.length>0){
+    staffSummaryHtml='<div class="card settings-section"><h3>📊 '+monthDisplay(mk)+' スタッフ別報酬</h3>';
+    let grandTotal=0;
+    D.config.staff.forEach(s=>{
+      const cl=D.clients.filter(c=>c.staffId===s.id);
+      const calc=calcMonth(mk,cl);
+      grandTotal+=calc.totalReward;
+      staffSummaryHtml+=`<div class="info-row"><span><b>${esc(s.name)}</b><br><span style="font-size:11px;color:var(--text-light)">${calc.activeClients}名 / ${calc.totalSessions}回</span></span><span class="val" style="color:var(--green);font-size:16px">¥${calc.totalReward.toLocaleString()}</span></div>`;
+    });
+    staffSummaryHtml+=`<div class="info-row" style="border-top:2px solid var(--border);padding-top:10px;margin-top:6px"><span style="font-weight:700">合計</span><span class="val" style="color:var(--accent);font-size:18px">¥${grandTotal.toLocaleString()}</span></div>`;
+    staffSummaryHtml+='</div>';
+  }
+  // スタッフ管理
+  let staffMgmtHtml='<div class="card settings-section"><h3>👥 スタッフ管理</h3>';
+  if(D.config.staff.length===0){
+    staffMgmtHtml+='<div style="font-size:13px;color:var(--text-light);margin-bottom:12px">スタッフが未登録です。最初のスタッフを追加してください。</div>';
+  }else{
+    D.config.staff.forEach(s=>{
+      const cnt=D.clients.filter(c=>c.staffId===s.id).length;
+      staffMgmtHtml+=`<div class="info-row"><span><b>${esc(s.name)}</b><br><span style="font-size:11px;color:var(--text-light)">PIN ${esc(s.pin)} ／ ゲスト${cnt}名</span></span><button class="btn-sm btn-outline" onclick="openEditStaff('${s.id}')">編集</button></div>`;
+    });
+  }
+  staffMgmtHtml+='<button class="btn btn-outline" style="margin-top:12px" onclick="openAddStaff()">＋ スタッフを追加</button></div>';
+  let html=staffSummaryHtml+staffMgmtHtml+`
     <div class="card settings-section">
       <h3>💰 ADEN（ルーム差し引き型）</h3>
       <div class="form-group"><label>ルーム利用料（円/回）</label><input type="number" value="${D.config.prices.aden.room}" onchange="updateConfig('aden_room',this.value)"></div>
@@ -843,9 +963,9 @@ function renderSettings(){
       <div style="font-size:11px;color:var(--text-light)">自己集客は「セッション料 − 控除（¥${(18000-D.config.prices.resync.self).toLocaleString()}）」で計算されます。</div>
     </div>
     <div class="card settings-section">
-      <h3>🔑 PIN設定</h3>
-      <div class="form-group"><label>スタッフ PIN（4桁）</label><input type="text" maxlength="4" inputmode="numeric" value="${D.config.trainerPin}" onchange="updateConfig('trainerPin',this.value)"></div>
+      <h3>🔑 管理者 PIN</h3>
       <div class="form-group"><label>管理者 PIN（4桁）</label><input type="text" maxlength="4" inputmode="numeric" value="${D.config.masterPin}" onchange="updateConfig('masterPin',this.value)"></div>
+      <div style="font-size:11px;color:var(--text-light)">スタッフ個別の名前・PINは「👥 スタッフ管理」から変更します。</div>
     </div>
     <div class="card settings-section">
       <h3>🔓 確定済み月の管理</h3>`;
@@ -939,8 +1059,7 @@ function unlockMonth(mk){
   delete D.lockedMonths[mk];save();render();
 }
 function updateConfig(key,val){
-  if(key==='trainerName')D.config.trainerName=String(val||'スタッフ');
-  else if(key==='aden_room')D.config.prices.aden.room=parseInt(val)||0;
+  if(key==='aden_room')D.config.prices.aden.room=parseInt(val)||0;
   else if(key==='sub_room')D.config.prices['sub-svc'].room=parseInt(val)||0;
   else if(key==='noic_ad')D.config.prices.noic.ad=parseInt(val)||0;
   else if(key==='noic_self')D.config.prices.noic.self=parseInt(val)||0;
@@ -948,9 +1067,61 @@ function updateConfig(key,val){
   else if(key==='resync_ad')D.config.prices.resync.ad=parseInt(val)||0;
   else if(key==='resync_self')D.config.prices.resync.self=parseInt(val)||0;
   else if(key==='resync_monitor')D.config.prices.resync.monitor=parseInt(val)||0;
-  else if(key==='trainerPin')D.config.trainerPin=val;
-  else if(key==='masterPin')D.config.masterPin=val;
+  else if(key==='masterPin')D.config.masterPin=String(val||'0000').padStart(4,'0');
   save();render();
+}
+
+/* ===== Staff CRUD ===== */
+function openAddStaff(){
+  const html=`
+    <div class="modal-header"><h2>スタッフを追加</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <div class="form-group"><label>スタッフ名</label><input id="sName" type="text" placeholder="例: 杉山"></div>
+    <div class="form-group"><label>PIN（4桁）</label><input id="sPin" type="text" maxlength="4" inputmode="numeric" placeholder="例: 1234"></div>
+    <button class="btn btn-primary" onclick="saveNewStaff()">追加する</button>`;
+  openModal(html);
+}
+function saveNewStaff(){
+  const name=document.getElementById('sName').value.trim();
+  const pin=String(document.getElementById('sPin').value||'').padStart(4,'0').slice(0,4);
+  if(!name){alert('スタッフ名を入力してください');return}
+  if(!/^\d{4}$/.test(pin)){alert('PINは4桁の数字で入力してください');return}
+  D.config.staff.push({
+    id:'s_'+Date.now()+'_'+Math.random().toString(36).slice(2,6),
+    name,pin,createdAt:Date.now()
+  });
+  save();closeModal();render();
+}
+function openEditStaff(id){
+  const s=findStaff(id);if(!s)return;
+  const cnt=D.clients.filter(c=>c.staffId===id).length;
+  const html=`
+    <div class="modal-header"><h2>スタッフ編集</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <div class="form-group"><label>スタッフ名</label><input id="seName" type="text" value="${esc(s.name)}"></div>
+    <div class="form-group"><label>PIN（4桁）</label><input id="sePin" type="text" maxlength="4" inputmode="numeric" value="${esc(s.pin)}"></div>
+    <div style="font-size:12px;color:var(--text-light);margin-bottom:12px">担当ゲスト: ${cnt}名</div>
+    <button class="btn btn-primary" onclick="saveEditStaff('${id}')">保存する</button>
+    <div class="delete-zone"><button class="btn btn-danger" onclick="deleteStaff('${id}')">このスタッフを削除</button></div>`;
+  openModal(html);
+}
+function saveEditStaff(id){
+  const s=findStaff(id);if(!s)return;
+  const name=document.getElementById('seName').value.trim();
+  const pin=String(document.getElementById('sePin').value||'').padStart(4,'0').slice(0,4);
+  if(!name){alert('スタッフ名を入力してください');return}
+  if(!/^\d{4}$/.test(pin)){alert('PINは4桁の数字で入力してください');return}
+  s.name=name;s.pin=pin;
+  save();closeModal();render();
+}
+function deleteStaff(id){
+  const cnt=D.clients.filter(c=>c.staffId===id).length;
+  if(cnt>0){
+    if(!confirm('このスタッフには '+cnt+' 名のゲストが紐付いています。\n削除すると、それらのゲストは「未割当」になります。続行しますか？'))return;
+  }else{
+    if(!confirm('このスタッフを削除しますか？'))return;
+  }
+  D.config.staff=D.config.staff.filter(x=>x.id!==id);
+  D.clients.forEach(c=>{if(c.staffId===id)c.staffId=null});
+  save();closeModal();render();
 }
 
 /* ===== Ticket CRUD ===== */
@@ -999,7 +1170,7 @@ function buildServiceRadios(selectedSvc){
     </div>`;
   }).join('');
 }
-let _modalSvc='aden',_modalSrc='ad';
+let _modalSvc='aden',_modalSrc='ad',_modalStaffId=null;
 function selectService(svc){
   _modalSvc=svc;
   refreshModalServiceUI();
@@ -1033,11 +1204,16 @@ function refreshModalServiceUI(){
   }
 }
 function openAddClient(){
+  if(!isMaster&&!currentStaffId){alert('ログインスタッフが不明です');return}
+  if(isMaster&&D.config.staff.length===0){alert('まず「設定」タブでスタッフを追加してください');return}
   _modalSvc=clientFilter==='all'?'aden':clientFilter;
   _modalSrc='ad';
+  _modalStaffId=isMaster?D.config.staff[0].id:currentStaffId;
+  const staffPicker=isMaster?`<div class="form-group"><label>担当スタッフ</label><select id="mStaff" onchange="_modalStaffId=this.value">${D.config.staff.map(s=>`<option value="${s.id}" ${s.id===_modalStaffId?'selected':''}>${esc(s.name)}</option>`).join('')}</select></div>`:'';
   const html=`
     <div class="modal-header"><h2>ゲストを追加</h2><button class="modal-close" onclick="closeModal()">×</button></div>
     <div class="form-group"><label>ゲスト名</label><input id="mName" type="text" placeholder="例: 田中太郎"></div>
+    ${staffPicker}
     <div class="form-group"><label>サービス区分</label>
       <div class="svc-radio-group">${buildServiceRadios(_modalSvc)}</div>
     </div>
@@ -1073,6 +1249,7 @@ function saveNewClient(){
     source:src,
     sessionPrice:price,
     courses,
+    staffId:_modalStaffId||currentStaffId,
     createdAt:Date.now()
   });
   save();closeModal();render();
@@ -1081,6 +1258,7 @@ function openEditClient(id){
   const c=D.clients.find(x=>x.id===id);if(!c)return;
   _modalSvc=c.service;
   _modalSrc=c.source||'ad';
+  _modalStaffId=c.staffId||(isMaster&&D.config.staff[0]?D.config.staff[0].id:currentStaffId);
   const tk=getTicketInfo(id);
   let coursesHtml='';
   if(c.courses.length>0){
@@ -1095,9 +1273,11 @@ function openEditClient(id){
   const editIsSelfVar=(c.service==='noic'||c.service==='resync')&&c.source==='self';
   const editIsHybrid=editIsRoom||editIsSelfVar;
   const hasSource=SERVICES[c.service].hasSource;
+  const staffPicker=isMaster?`<div class="form-group"><label>担当スタッフ</label><select id="eStaff" onchange="_modalStaffId=this.value">${D.config.staff.map(s=>`<option value="${s.id}" ${s.id===_modalStaffId?'selected':''}>${esc(s.name)}</option>`).join('')}</select></div>`:'';
   const html=`
     <div class="modal-header"><h2>ゲスト編集</h2><button class="modal-close" onclick="closeModal()">×</button></div>
     <div class="form-group"><label>ゲスト名</label><input id="eName" type="text" value="${esc(c.name)}"></div>
+    ${staffPicker}
     <div class="form-group"><label>サービス区分</label>
       <div class="svc-radio-group">${buildServiceRadios(c.service)}</div>
     </div>
@@ -1128,6 +1308,7 @@ function saveEditClient(id){
   c.name=document.getElementById('eName').value.trim();
   c.service=_modalSvc;
   c.source=SERVICES[_modalSvc].hasSource?_modalSrc:null;
+  if(isMaster&&_modalStaffId)c.staffId=_modalStaffId;
   const isRoom=c.service==='aden'||c.service==='sub-svc';
   const isSelfVar=(c.service==='noic'||c.service==='resync')&&c.source==='self';
   const isHybrid=isRoom||isSelfVar;
@@ -1198,13 +1379,18 @@ function esc(s){const d=document.createElement('div');d.textContent=s;return d.i
 
 /* ===== Init ===== */
 function initApp(){
-  document.getElementById('headerSubtitle').textContent=isMaster?'管理者モード':D.config.trainerName;
+  let label='スタッフ';
+  if(isMaster)label='管理者モード';
+  else if(currentStaffId){const s=findStaff(currentStaffId);if(s)label=s.name}
+  document.getElementById('headerSubtitle').textContent=label;
   document.getElementById('tabSettings').classList.toggle('hidden',!isMaster);
+  clientFilter='all';
   render();
 }
 load();
 currentMonth=monthKey(new Date());
 document.getElementById('monthLabel').textContent=monthDisplay(currentMonth);
+renderStaffSelector();
 
 (async function boot(){
   if(API_URL){
