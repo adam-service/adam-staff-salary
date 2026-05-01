@@ -55,6 +55,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Hiragino Kaku
 .badge.resync{background:var(--resync)}
 .badge.source-ad{background:#d35400;font-size:9px}
 .badge.source-self{background:#16a085;font-size:9px}
+.badge.source-monitor{background:#8e44ad;font-size:9px}
 .client-card{background:var(--card);border-radius:12px;padding:14px;margin-bottom:10px;box-shadow:var(--shadow);border-left:4px solid var(--border)}
 .client-card.aden{border-left-color:var(--aden)}
 .client-card.sub-svc{border-left-color:var(--sub)}
@@ -295,12 +296,12 @@ const SAVE_DELAY=1500;
 const SERVICES={
   aden:{label:'ADEN',color:'aden',icon:'A',hasRoom:true,defaultPrice:18000,defaultRoom:8000},
   'sub-svc':{label:'SUB',color:'sub-svc',icon:'S',hasRoom:true,defaultPrice:13000,defaultRoom:5000},
-  noic:{label:'NOIC',color:'noic',icon:'N',hasSource:true,defaultPrice:18000,defaultRewards:{ad:6000,self:10000}},
-  resync:{label:'resync',color:'resync',icon:'R',hasSource:true,defaultPrice:18000,defaultRewards:{ad:6000,self:10000}}
+  noic:{label:'NOIC',color:'noic',icon:'N',hasSource:true,defaultPrice:18000,defaultRewards:{ad:6000,self:10000,monitor:2500}},
+  resync:{label:'resync',color:'resync',icon:'R',hasSource:true,defaultPrice:18000,defaultRewards:{ad:6000,self:10000,monitor:2500}}
 };
 function svcLabel(s){return SERVICES[s]?SERVICES[s].label:s}
 function svcClass(s){return SERVICES[s]?SERVICES[s].color:''}
-function sourceLabel(src){return src==='ad'?'広告経由':src==='self'?'自己集客':''}
+function sourceLabel(src){return src==='ad'?'広告経由':src==='self'?'自己集客':src==='monitor'?'モニター':''}
 
 /* ===== Default Data ===== */
 function defaultData(){
@@ -312,8 +313,8 @@ function defaultData(){
       prices:{
         aden:{room:8000},
         'sub-svc':{room:5000},
-        noic:{ad:6000,self:10000},
-        resync:{ad:6000,self:10000}
+        noic:{ad:6000,self:10000,monitor:2500},
+        resync:{ad:6000,self:10000,monitor:2500}
       }
     },
     clients:[],
@@ -331,8 +332,10 @@ function migrateData(d){
   if(!d.config.prices)d.config.prices=defaultData().config.prices;
   if(!d.config.prices.aden)d.config.prices.aden={room:8000};
   if(!d.config.prices['sub-svc'])d.config.prices['sub-svc']={room:5000};
-  if(!d.config.prices.noic)d.config.prices.noic={ad:6000,self:10000};
-  if(!d.config.prices.resync)d.config.prices.resync={ad:6000,self:10000};
+  if(!d.config.prices.noic)d.config.prices.noic={ad:6000,self:10000,monitor:2500};
+  else if(d.config.prices.noic.monitor==null)d.config.prices.noic.monitor=2500;
+  if(!d.config.prices.resync)d.config.prices.resync={ad:6000,self:10000,monitor:2500};
+  else if(d.config.prices.resync.monitor==null)d.config.prices.resync.monitor=2500;
   if(!d.lockedMonths)d.lockedMonths={};
   if(!d.clients)d.clients=[];
   if(!d.sessions)d.sessions={};
@@ -563,10 +566,20 @@ function calcClientMonth(clientId,mk){
   }else if(c.service==='sub-svc'){
     roomFee=D.config.prices['sub-svc'].room||0;
     unitReward=Math.max(0,sessionPrice-roomFee);
-  }else if(c.service==='noic'){
-    unitReward=c.source==='ad'?(D.config.prices.noic.ad||0):(D.config.prices.noic.self||0);
-  }else if(c.service==='resync'){
-    unitReward=c.source==='ad'?(D.config.prices.resync.ad||0):(D.config.prices.resync.self||0);
+  }else if(c.service==='noic'||c.service==='resync'){
+    const p=D.config.prices[c.service];
+    if(c.source==='ad'){
+      unitReward=p.ad||0;
+    }else if(c.source==='monitor'){
+      unitReward=p.monitor||0;
+    }else{
+      // 自己集客: 基準セッション料18,000円のときの報酬から、安くなった分を差し引く
+      const basePrice=SERVICES[c.service].defaultPrice||18000;
+      const baseReward=p.self||0;
+      const deduction=basePrice-baseReward; // 8,000（標準）
+      roomFee=deduction;
+      unitReward=Math.max(0,sessionPrice-deduction);
+    }
   }
   const reward=count===0?0:unitReward*count;
   return{count,reward,unitReward,sessionPrice,roomFee,service:c.service,source:c.source};
@@ -658,7 +671,9 @@ function renderInput(){
       const pct=hasTickets?Math.min(100,Math.round(tk.used/tk.total*100)):0;
       const fillClass=hasTickets?(tk.remaining===0?'empty':tk.remaining<=2?'warn':''):'';
       const svcCls=svcClass(c.service);
-      const isHybridReward=c.service==='aden'||c.service==='sub-svc';
+      const isRoomDeduction=c.service==='aden'||c.service==='sub-svc';
+      const isSelfVariable=(c.service==='noic'||c.service==='resync')&&c.source==='self';
+      const isHybridReward=isRoomDeduction||isSelfVariable;
       const sourceBadge=c.source?'<span class="badge source-'+c.source+'">'+sourceLabel(c.source)+'</span>':'';
       const overridden=s.sessionPriceOverride!=null&&s.sessionPriceOverride!==c.sessionPrice;
       return`
@@ -682,7 +697,7 @@ function renderInput(){
         </div>
         `}
         <div class="client-meta">
-          ${isHybridReward?`セッション料: ¥${r.sessionPrice.toLocaleString()} − ルーム料 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回`:`報酬単価: ¥${r.unitReward.toLocaleString()}/回（${sourceLabel(c.source)}）`}
+          ${isRoomDeduction?`セッション料: ¥${r.sessionPrice.toLocaleString()} − ルーム料 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回`:isSelfVariable?`セッション料: ¥${r.sessionPrice.toLocaleString()} − 控除 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回（自己集客）`:`報酬単価: ¥${r.unitReward.toLocaleString()}/回（${sourceLabel(c.source)}）`}
         </div>
         <div class="session-row">
           <div class="session-controls">
@@ -727,9 +742,9 @@ function renderReport(){
   services.forEach(svc=>{
     const list=calc.details.filter(d=>d.client.service===svc);
     if(list.length===0)return;
-    const isHybrid=svc==='aden'||svc==='sub-svc';
+    const isRoom=svc==='aden'||svc==='sub-svc';
     html+=`<div class="section-title ${svcClass(svc)}"><span class="badge ${svcClass(svc)}">${svcLabel(svc)}</span>${list.length}名 / ${list.reduce((s,d)=>s+d.count,0)}回</div>`;
-    if(isHybrid){
+    if(isRoom){
       html+=`<table class="report-table"><tr><th>ゲスト</th><th>回数</th><th>セッション料</th><th>ルーム料</th><th>単価</th><th>報酬</th></tr>`;
       list.forEach(d=>{
         html+=`<tr><td class="name-col">${esc(d.client.name)}</td><td>${d.count}回</td><td>¥${d.sessionPrice.toLocaleString()}</td><td>¥${d.roomFee.toLocaleString()}</td><td>¥${d.unitReward.toLocaleString()}</td><td style="font-weight:700;color:var(--green)">¥${d.reward.toLocaleString()}</td></tr>`;
@@ -737,12 +752,13 @@ function renderReport(){
       const subtotal=list.reduce((s,d)=>s+d.reward,0);
       html+=`<tr class="total-row"><td class="name-col">小計</td><td>${list.reduce((s,d)=>s+d.count,0)}回</td><td colspan="3"></td><td style="color:var(--green)">¥${subtotal.toLocaleString()}</td></tr></table>`;
     }else{
-      html+=`<table class="report-table"><tr><th>ゲスト</th><th>流入</th><th>回数</th><th>単価</th><th>報酬</th></tr>`;
+      html+=`<table class="report-table"><tr><th>ゲスト</th><th>流入</th><th>回数</th><th>セッション料</th><th>単価</th><th>報酬</th></tr>`;
       list.forEach(d=>{
-        html+=`<tr><td class="name-col">${esc(d.client.name)}</td><td><span class="badge source-${d.source}">${sourceLabel(d.source)}</span></td><td>${d.count}回</td><td>¥${d.unitReward.toLocaleString()}</td><td style="font-weight:700;color:var(--green)">¥${d.reward.toLocaleString()}</td></tr>`;
+        const isSelfVar=d.source==='self';
+        html+=`<tr><td class="name-col">${esc(d.client.name)}</td><td><span class="badge source-${d.source}">${sourceLabel(d.source)}</span></td><td>${d.count}回</td><td>${isSelfVar?'¥'+d.sessionPrice.toLocaleString():'—'}</td><td>¥${d.unitReward.toLocaleString()}</td><td style="font-weight:700;color:var(--green)">¥${d.reward.toLocaleString()}</td></tr>`;
       });
       const subtotal=list.reduce((s,d)=>s+d.reward,0);
-      html+=`<tr class="total-row"><td class="name-col">小計</td><td></td><td>${list.reduce((s,d)=>s+d.count,0)}回</td><td></td><td style="color:var(--green)">¥${subtotal.toLocaleString()}</td></tr></table>`;
+      html+=`<tr class="total-row"><td class="name-col">小計</td><td colspan="2">${list.reduce((s,d)=>s+d.count,0)}回</td><td colspan="2"></td><td style="color:var(--green)">¥${subtotal.toLocaleString()}</td></tr></table>`;
     }
   });
 
@@ -771,14 +787,23 @@ function renderClients(){
   sorted.forEach(c=>{
     const tk=getTicketInfo(c.id);
     const sourceBadge=c.source?'<span class="badge source-'+c.source+'">'+sourceLabel(c.source)+'</span>':'';
-    const isHybrid=c.service==='aden'||c.service==='sub-svc';
+    const isRoom=c.service==='aden'||c.service==='sub-svc';
+    const isSelfVar=(c.service==='noic'||c.service==='resync')&&c.source==='self';
+    let metaText;
+    if(isRoom){metaText='セッション料 ¥'+(c.sessionPrice||0).toLocaleString()}
+    else if(isSelfVar){metaText='セッション料 ¥'+(c.sessionPrice||0).toLocaleString()+'（基準¥18,000）'}
+    else{
+      const p=D.config.prices[c.service];
+      const unit=c.source==='ad'?p.ad:c.source==='monitor'?p.monitor:p.self;
+      metaText='報酬単価 ¥'+(unit||0).toLocaleString()+'/回';
+    }
     html+=`<div style="padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="openEditClient('${c.id}')">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div><span style="font-weight:700">${esc(c.name)}</span> <span class="badge ${svcClass(c.service)}">${svcLabel(c.service)}</span>${sourceBadge}</div>
         <div style="font-size:12px;color:var(--text-light)">残${tk.remaining} / ${tk.total}回</div>
       </div>
       <div style="font-size:12px;color:var(--text-light);margin-top:2px">
-        ${isHybrid?'セッション料 ¥'+(c.sessionPrice||0).toLocaleString():'報酬単価 ¥'+(c.service==='noic'?(c.source==='ad'?D.config.prices.noic.ad:D.config.prices.noic.self):(c.source==='ad'?D.config.prices.resync.ad:D.config.prices.resync.self)).toLocaleString()+'/回'}
+        ${metaText}
       </div>
     </div>`;
   });
@@ -804,14 +829,18 @@ function renderSettings(){
       <div style="font-size:11px;color:var(--text-light)">報酬 = セッション料金 − ルーム利用料</div>
     </div>
     <div class="card settings-section">
-      <h3>💰 NOIC（固定報酬型）</h3>
+      <h3>💰 NOIC（流入経路別）</h3>
       <div class="form-group"><label>広告経由ゲスト 報酬（円/回）</label><input type="number" value="${D.config.prices.noic.ad}" onchange="updateConfig('noic_ad',this.value)"></div>
-      <div class="form-group"><label>自己集客ゲスト 報酬（円/回）</label><input type="number" value="${D.config.prices.noic.self}" onchange="updateConfig('noic_self',this.value)"></div>
+      <div class="form-group"><label>自己集客ゲスト 基準報酬（円/回）<span style="font-size:11px;color:var(--text-light);margin-left:4px">※基準セッション料¥18,000のとき</span></label><input type="number" value="${D.config.prices.noic.self}" onchange="updateConfig('noic_self',this.value)"></div>
+      <div class="form-group"><label>モニターゲスト 報酬（円/回）</label><input type="number" value="${D.config.prices.noic.monitor}" onchange="updateConfig('noic_monitor',this.value)"></div>
+      <div style="font-size:11px;color:var(--text-light)">自己集客は「セッション料 − 控除（¥${(18000-D.config.prices.noic.self).toLocaleString()}）」で計算されます。</div>
     </div>
     <div class="card settings-section">
-      <h3>💰 resync（固定報酬型）</h3>
+      <h3>💰 resync（流入経路別）</h3>
       <div class="form-group"><label>広告経由ゲスト 報酬（円/回）</label><input type="number" value="${D.config.prices.resync.ad}" onchange="updateConfig('resync_ad',this.value)"></div>
-      <div class="form-group"><label>自己集客ゲスト 報酬（円/回）</label><input type="number" value="${D.config.prices.resync.self}" onchange="updateConfig('resync_self',this.value)"></div>
+      <div class="form-group"><label>自己集客ゲスト 基準報酬（円/回）<span style="font-size:11px;color:var(--text-light);margin-left:4px">※基準セッション料¥18,000のとき</span></label><input type="number" value="${D.config.prices.resync.self}" onchange="updateConfig('resync_self',this.value)"></div>
+      <div class="form-group"><label>モニターゲスト 報酬（円/回）</label><input type="number" value="${D.config.prices.resync.monitor}" onchange="updateConfig('resync_monitor',this.value)"></div>
+      <div style="font-size:11px;color:var(--text-light)">自己集客は「セッション料 − 控除（¥${(18000-D.config.prices.resync.self).toLocaleString()}）」で計算されます。</div>
     </div>
     <div class="card settings-section">
       <h3>🔑 PIN設定</h3>
@@ -915,8 +944,10 @@ function updateConfig(key,val){
   else if(key==='sub_room')D.config.prices['sub-svc'].room=parseInt(val)||0;
   else if(key==='noic_ad')D.config.prices.noic.ad=parseInt(val)||0;
   else if(key==='noic_self')D.config.prices.noic.self=parseInt(val)||0;
+  else if(key==='noic_monitor')D.config.prices.noic.monitor=parseInt(val)||0;
   else if(key==='resync_ad')D.config.prices.resync.ad=parseInt(val)||0;
   else if(key==='resync_self')D.config.prices.resync.self=parseInt(val)||0;
+  else if(key==='resync_monitor')D.config.prices.resync.monitor=parseInt(val)||0;
   else if(key==='trainerPin')D.config.trainerPin=val;
   else if(key==='masterPin')D.config.masterPin=val;
   save();render();
@@ -976,12 +1007,15 @@ function selectService(svc){
 function selectSource(src){
   _modalSrc=src;
   document.querySelectorAll('.source-radio').forEach(r=>r.classList.toggle('active',r.dataset.src===src));
+  refreshModalServiceUI();
 }
 function refreshModalServiceUI(){
   document.querySelectorAll('.svc-radio').forEach(r=>{
     r.classList.toggle('active',r.querySelector('div:last-child').textContent===SERVICES[_modalSvc].label);
   });
-  const isHybrid=_modalSvc==='aden'||_modalSvc==='sub-svc';
+  const isRoom=_modalSvc==='aden'||_modalSvc==='sub-svc';
+  const isSelfVar=(_modalSvc==='noic'||_modalSvc==='resync')&&_modalSrc==='self';
+  const isHybrid=isRoom||isSelfVar;
   const hasSource=SERVICES[_modalSvc].hasSource;
   const sourceGroup=document.getElementById('mSourceGroup');
   if(sourceGroup)sourceGroup.classList.toggle('hidden',!hasSource);
@@ -990,8 +1024,8 @@ function refreshModalServiceUI(){
   if(priceGroup&&priceLabel){
     if(isHybrid){
       priceGroup.classList.remove('hidden');
-      priceLabel.textContent='セッション料金（円）';
-      const inp=document.getElementById('mPrice');
+      priceLabel.textContent=isSelfVar?'セッション料金（円）／基準¥18,000':'セッション料金（円）';
+      const inp=document.getElementById('mPrice')||document.getElementById('ePrice');
       if(inp&&!inp.dataset.userTouched)inp.value=SERVICES[_modalSvc].defaultPrice;
     }else{
       priceGroup.classList.add('hidden');
@@ -1011,6 +1045,7 @@ function openAddClient(){
       <div class="source-radio-group">
         <div class="source-radio active" data-src="ad" onclick="selectSource('ad')">広告経由</div>
         <div class="source-radio" data-src="self" onclick="selectSource('self')">自己集客</div>
+        <div class="source-radio" data-src="monitor" onclick="selectSource('monitor')">モニター</div>
       </div>
     </div>
     <div class="form-group" id="mPriceGroup"><label id="mPriceLabel">セッション料金（円）</label><input id="mPrice" type="number" oninput="this.dataset.userTouched=1" value="${SERVICES[_modalSvc].defaultPrice||18000}"></div>
@@ -1024,7 +1059,9 @@ function saveNewClient(){
   if(!name){alert('名前を入力してください');return}
   const svc=_modalSvc;
   const src=SERVICES[svc].hasSource?_modalSrc:null;
-  const isHybrid=svc==='aden'||svc==='sub-svc';
+  const isRoom=svc==='aden'||svc==='sub-svc';
+  const isSelfVar=(svc==='noic'||svc==='resync')&&src==='self';
+  const isHybrid=isRoom||isSelfVar;
   const price=isHybrid?(parseInt(document.getElementById('mPrice').value)||SERVICES[svc].defaultPrice):SERVICES[svc].defaultPrice;
   const ticket=parseInt(document.getElementById('mTicket').value)||0;
   const courses=[];
@@ -1054,7 +1091,9 @@ function openEditClient(id){
     });
     coursesHtml+=`</div><div style="font-size:12px;color:var(--text-light);margin-top:4px">合計 ${tk.total}回 ／ 消化 ${tk.used}回 ／ <b>残り ${tk.remaining}回</b></div></div>`;
   }
-  const isHybrid=c.service==='aden'||c.service==='sub-svc';
+  const editIsRoom=c.service==='aden'||c.service==='sub-svc';
+  const editIsSelfVar=(c.service==='noic'||c.service==='resync')&&c.source==='self';
+  const editIsHybrid=editIsRoom||editIsSelfVar;
   const hasSource=SERVICES[c.service].hasSource;
   const html=`
     <div class="modal-header"><h2>ゲスト編集</h2><button class="modal-close" onclick="closeModal()">×</button></div>
@@ -1066,9 +1105,10 @@ function openEditClient(id){
       <div class="source-radio-group">
         <div class="source-radio ${_modalSrc==='ad'?'active':''}" data-src="ad" onclick="selectSource('ad')">広告経由</div>
         <div class="source-radio ${_modalSrc==='self'?'active':''}" data-src="self" onclick="selectSource('self')">自己集客</div>
+        <div class="source-radio ${_modalSrc==='monitor'?'active':''}" data-src="monitor" onclick="selectSource('monitor')">モニター</div>
       </div>
     </div>
-    <div class="form-group ${isHybrid?'':'hidden'}" id="mPriceGroup"><label id="mPriceLabel">セッション料金（円）</label><input id="ePrice" type="number" data-user-touched="1" value="${c.sessionPrice||0}"></div>
+    <div class="form-group ${editIsHybrid?'':'hidden'}" id="mPriceGroup"><label id="mPriceLabel">セッション料金（円）</label><input id="ePrice" type="number" data-user-touched="1" value="${c.sessionPrice||SERVICES[c.service].defaultPrice||18000}"></div>
     ${coursesHtml}
     <div class="form-group"><label>🎫 チケット追加（回数）</label><input id="eNewTicket" type="number" placeholder="追加する回数を入力" inputmode="numeric" min="0"></div>
     <button class="btn btn-primary" onclick="saveEditClient('${c.id}')">保存する</button>
@@ -1088,7 +1128,9 @@ function saveEditClient(id){
   c.name=document.getElementById('eName').value.trim();
   c.service=_modalSvc;
   c.source=SERVICES[_modalSvc].hasSource?_modalSrc:null;
-  const isHybrid=c.service==='aden'||c.service==='sub-svc';
+  const isRoom=c.service==='aden'||c.service==='sub-svc';
+  const isSelfVar=(c.service==='noic'||c.service==='resync')&&c.source==='self';
+  const isHybrid=isRoom||isSelfVar;
   if(isHybrid){
     const inp=document.getElementById('ePrice');
     c.sessionPrice=inp?(parseInt(inp.value)||SERVICES[c.service].defaultPrice):SERVICES[c.service].defaultPrice;
