@@ -60,6 +60,14 @@ function getOrCreateSheet(name,headers){
       sh.getRange(1,1,1,headers.length).setValues([headers]);
       sh.getRange(1,1,1,headers.length).setFontWeight('bold');
     }
+  }else if(headers&&headers.length>0){
+    // ヘッダー行が短ければ不足分を補う（後方互換のための列追加）
+    const lastCol=Math.max(sh.getLastColumn(),1);
+    const existing=sh.getRange(1,1,1,lastCol).getValues()[0];
+    if(existing.length<headers.length){
+      sh.getRange(1,existing.length+1,1,headers.length-existing.length).setValues([headers.slice(existing.length)]);
+      sh.getRange(1,1,1,headers.length).setFontWeight('bold');
+    }
   }
   return sh;
 }
@@ -95,23 +103,36 @@ function getAllData(){
   const cfgSh=getOrCreateSheet('設定',['key','value']);
   const cfgRows=sheetToArray(cfgSh);
   const config={
-    masterPin:'0000',trainerPin:'0000',trainerName:'スタッフ',
+    masterPin:'0000',
+    staff:[],
     prices:{
       aden:{room:8000},
       'sub-svc':{room:5000},
-      noic:{ad:6000,self:10000},
-      resync:{ad:6000,self:10000}
+      noic:{ad:6000,self:10000,monitor:2500},
+      resync:{ad:6000,self:10000,monitor:2500}
     }
   };
+  // 旧 trainerPin/trainerName を staff[0] に移行するための一時保持
+  let legacyTrainerPin=null,legacyTrainerName=null;
   cfgRows.forEach(r=>{
     if(r.key==='masterPin')config.masterPin=String(r.value).padStart(4,'0');
-    else if(r.key==='trainerPin')config.trainerPin=String(r.value).padStart(4,'0');
-    else if(r.key==='trainerName')config.trainerName=String(r.value);
+    else if(r.key==='trainerPin')legacyTrainerPin=String(r.value).padStart(4,'0');
+    else if(r.key==='trainerName')legacyTrainerName=String(r.value);
+    else if(r.key==='staff')try{config.staff=JSON.parse(r.value)||[]}catch(e){}
     else if(r.key==='prices')try{config.prices=JSON.parse(r.value)}catch(e){}
   });
+  if((legacyTrainerName||legacyTrainerPin)&&config.staff.length===0){
+    config.staff.push({
+      id:'s_'+Date.now()+'_legacy',
+      name:legacyTrainerName||'スタッフ1',
+      pin:legacyTrainerPin||'0000',
+      createdAt:Date.now()
+    });
+  }
 
   // Clients
-  const clSh=getOrCreateSheet('ゲスト',['id','name','service','source','sessionPrice','courses','createdAt']);
+  const clSh=getOrCreateSheet('ゲスト',['id','name','service','source','sessionPrice','courses','createdAt','staffId']);
+  const defaultStaffId=config.staff[0]?config.staff[0].id:null;
   const clients=sheetToArray(clSh).map(r=>({
     id:String(r.id),
     name:String(r.name),
@@ -119,7 +140,8 @@ function getAllData(){
     source:r.source?String(r.source):null,
     sessionPrice:Number(r.sessionPrice)||0,
     courses:r.courses?JSON.parse(r.courses):[],
-    createdAt:Number(r.createdAt)||0
+    createdAt:Number(r.createdAt)||0,
+    staffId:r.staffId?String(r.staffId):defaultStaffId
   }));
 
   // Sessions
@@ -153,21 +175,20 @@ function saveAllData(D){
   cfgSh.getRange(2,2,10,1).setNumberFormat('@');
   const cfgData=[
     ['masterPin',String(D.config.masterPin).padStart(4,'0')],
-    ['trainerPin',String(D.config.trainerPin).padStart(4,'0')],
-    ['trainerName',D.config.trainerName||'スタッフ'],
+    ['staff',JSON.stringify(D.config.staff||[])],
     ['prices',JSON.stringify(D.config.prices)]
   ];
   cfgSh.getRange(2,1,cfgData.length,2).setValues(cfgData);
 
   // Clients
-  const clSh=getOrCreateSheet('ゲスト',['id','name','service','source','sessionPrice','courses','createdAt']);
-  if(clSh.getLastRow()>1)clSh.getRange(2,1,clSh.getLastRow()-1,7).clearContent();
+  const clSh=getOrCreateSheet('ゲスト',['id','name','service','source','sessionPrice','courses','createdAt','staffId']);
+  if(clSh.getLastRow()>1)clSh.getRange(2,1,clSh.getLastRow()-1,8).clearContent();
   if(D.clients&&D.clients.length>0){
     const clData=D.clients.map(c=>[
       c.id,c.name,c.service,c.source||'',c.sessionPrice||0,
-      JSON.stringify(c.courses||[]),c.createdAt||0
+      JSON.stringify(c.courses||[]),c.createdAt||0,c.staffId||''
     ]);
-    clSh.getRange(2,1,clData.length,7).setValues(clData);
+    clSh.getRange(2,1,clData.length,8).setValues(clData);
   }
 
   // Sessions
