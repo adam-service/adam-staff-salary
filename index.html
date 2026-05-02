@@ -787,7 +787,9 @@ function renderInput(){
       const r=calcClientMonth(c.id,mk);
       const tk=getTicketInfo(c.id);
       const hasTickets=tk.total>0;
-      const canAdd=!hasTickets||tk.remaining>0;
+      // モニター以外はチケット登録必須。モニターは未登録でもセッション追加可能。
+      const isMonitor=c.source==='monitor';
+      const canAdd=isMonitor?true:(hasTickets&&tk.remaining>0);
       const pct=hasTickets?Math.min(100,Math.round(tk.used/tk.total*100)):0;
       const fillClass=hasTickets?(tk.remaining===0?'empty':tk.remaining<=2?'warn':''):'';
       const svcCls=svcClass(c.service);
@@ -813,10 +815,14 @@ function renderInput(){
           <span class="ticket-label">${tk.used}/${tk.total}</span>
           <button class="ticket-add" onclick="openAddTicket('${c.id}')">＋追加</button>
         </div>
+        `:isMonitor?`
+        <div class="ticket-bar" style="background:#fef9e7">
+          <span class="ticket-label" style="color:#b7791f">モニター（チケット不要）</span>
+        </div>
         `:`
-        <div class="ticket-bar">
-          <span class="ticket-label">チケット未設定</span>
-          <button class="ticket-add" onclick="openAddTicket('${c.id}')">＋購入回数を設定</button>
+        <div class="ticket-bar" style="background:#fff5f5">
+          <span class="ticket-label" style="color:#c0392b;font-weight:600">⚠️ コース未登録 — セッション追加不可</span>
+          <button class="ticket-add" onclick="openAddTicket('${c.id}')">＋コースを登録</button>
         </div>
         `}
         <div class="client-meta">
@@ -1040,7 +1046,14 @@ function changeCount(clientId,delta){
   const newCount=s.count+delta;
   if(newCount<0)return;
   if(delta>0){
+    const c=D.clients.find(x=>x.id===clientId);
     const tk=getTicketInfo(clientId);
+    const isMonitor=c&&c.source==='monitor';
+    // モニター以外はコース登録必須
+    if(!isMonitor&&tk.total<=0){
+      alert('コース（チケット）が登録されていません。\nまずコースを登録してください。');
+      return;
+    }
     if(tk.total>0&&tk.remaining<=0){
       alert('チケットの残りがありません。\n追加購入してからカウントしてください。');
       return;
