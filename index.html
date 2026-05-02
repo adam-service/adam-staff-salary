@@ -685,7 +685,13 @@ function calcClientMonth(clientId,mk){
     unitReward=Math.max(0,sessionPrice-roomFee);
   }else if(c.service==='noic'||c.service==='resync'){
     const p=D.config.prices[c.service];
-    if(c.source==='ad'){
+    // ロイヤルティ昇格：広告経由でも累計コースが25回超なら自己集客レートに昇格
+    const tkTotal=(c.courses||[]).reduce((s,cr)=>s+(Number(cr.total)||0),0);
+    const promoted=c.source==='ad'&&tkTotal>25;
+    if(promoted){
+      // 自己集客レートに昇格（固定¥10,000）
+      unitReward=p.self||10000;
+    }else if(c.source==='ad'){
       unitReward=p.ad||0;
     }else if(c.source==='monitor'){
       unitReward=p.monitor||0;
@@ -700,7 +706,10 @@ function calcClientMonth(clientId,mk){
   const reward=count===0?0:unitReward*count;
   // モニターは無料対応のため売上は常に0円
   const revenue=count===0?0:(c.source==='monitor'?0:sessionPrice*count);
-  return{count,reward,unitReward,sessionPrice,roomFee,revenue,service:c.service,source:c.source,isCustom:!!c.customEnabled};
+  // 昇格判定（広告→自己レート）
+  const tkTotalAll=(c.courses||[]).reduce((s,cr)=>s+(Number(cr.total)||0),0);
+  const promoted=(c.service==='noic'||c.service==='resync')&&c.source==='ad'&&tkTotalAll>25;
+  return{count,reward,unitReward,sessionPrice,roomFee,revenue,service:c.service,source:c.source,isCustom:!!c.customEnabled,promoted,tkTotal:tkTotalAll};
 }
 function calcMonth(mk,clientList){
   const list=clientList||visibleClients();
@@ -804,10 +813,11 @@ function renderInput(){
       const staff=findStaff(c.staffId);
       const staffBadge=isMaster&&staff?'<span class="badge" style="background:#34495e">'+esc(staff.name)+'</span>':'';
       const customBadge=c.customEnabled?'<span class="badge" style="background:#16a085">⚙️カスタム</span>':'';
+      const promotedBadge=r.promoted?'<span class="badge" style="background:#d4ac0d" title="累計25回超のため自己集客レートに昇格">⭐昇格</span>':'';
       return`
       <div class="client-card ${svcCls}">
         <div class="client-header">
-          <div><span class="client-name">${esc(c.name)}</span> <span class="badge ${svcCls}">${svcLabel(c.service)}</span>${sourceBadge}${customBadge}${staffBadge}</div>
+          <div><span class="client-name">${esc(c.name)}</span> <span class="badge ${svcCls}">${svcLabel(c.service)}</span>${sourceBadge}${promotedBadge}${customBadge}${staffBadge}</div>
           <div style="font-size:11px;color:var(--text-light);cursor:pointer" onclick="openEditClient('${c.id}')">編集</div>
         </div>
         ${hasTickets?`
@@ -826,7 +836,7 @@ function renderInput(){
         ${orphanCount?`<div style="background:#ffe4e1;border:1px solid #c0392b;border-radius:6px;padding:8px;margin-top:6px;font-size:12px;color:#c0392b">⚠️ コース未登録なのに ${s.count}回 のセッションが記録されています。コースを登録するか、${isMaster?'<button onclick="resetSessionCount(\''+c.id+'\')" style="margin-left:6px;padding:2px 8px;background:#c0392b;color:#fff;border:none;border-radius:4px;cursor:pointer">回数を0にリセット</button>':'管理者にリセットを依頼してください。'}</div>`:''}
         `}
         <div class="client-meta">
-          ${c.customEnabled?`カスタム: 単価 ¥${r.sessionPrice.toLocaleString()} ／ 報酬 ¥${r.unitReward.toLocaleString()}/回`:isRoomDeduction?`セッション料: ¥${r.sessionPrice.toLocaleString()} − ルーム料 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回`:isSelfVariable?`セッション料: ¥${r.sessionPrice.toLocaleString()} − 控除 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回（自己集客）`:`報酬単価: ¥${r.unitReward.toLocaleString()}/回（${sourceLabel(c.source)}）`}
+          ${c.customEnabled?`カスタム: 単価 ¥${r.sessionPrice.toLocaleString()} ／ 報酬 ¥${r.unitReward.toLocaleString()}/回`:isRoomDeduction?`セッション料: ¥${r.sessionPrice.toLocaleString()} − ルーム料 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回`:isSelfVariable?`セッション料: ¥${r.sessionPrice.toLocaleString()} − 控除 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回（自己集客）`:r.promoted?`累計${r.tkTotal}回 → 自己集客レート昇格：¥${r.unitReward.toLocaleString()}/回`:`報酬単価: ¥${r.unitReward.toLocaleString()}/回（${sourceLabel(c.source)}）`}
         </div>
         <div class="session-row">
           <div class="session-controls">
