@@ -1261,10 +1261,44 @@ function openAddClient(){
       </div>
     </div>
     <div class="form-group" id="mPriceGroup"><label id="mPriceLabel">セッション料金（円）</label><input id="mPrice" type="number" oninput="this.dataset.userTouched=1" value="${SERVICES[_modalSvc].defaultPrice||18000}"></div>
+    ${isMaster?`
+    <div class="form-group" id="mCustomBox" style="border:1.5px solid var(--border);border-radius:10px;padding:12px;background:#fafafa">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="mCustomEnabled" onchange="toggleAddCustomMode(this.checked)" style="width:18px;height:18px;cursor:pointer">
+        <span style="font-weight:700">⚙️ カスタム単価・報酬を使う</span>
+      </label>
+      <div id="mCustomFields" class="hidden" style="margin-top:10px">
+        <div style="font-size:11px;color:var(--text-light);margin-bottom:8px">イレギュラーケース（例：ペアセッション、特別料金）に使用。標準単価を無視して独自設定します。</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div><label style="font-size:12px">セッション単価（売上）円</label><input id="mCustomPrice" type="number" placeholder="例: 27000"></div>
+          <div><label style="font-size:12px">報酬単価（円/回）</label><input id="mCustomReward" type="number" placeholder="例: 9000"></div>
+        </div>
+      </div>
+    </div>`:''}
     <div class="form-group"><label>購入回数（チケット）</label><input id="mTicket" type="number" placeholder="例: 10" inputmode="numeric" min="0"></div>
     <button class="btn btn-primary" onclick="saveNewClient()">追加する</button>`;
   openModal(html);
   setTimeout(refreshModalServiceUI,10);
+}
+function toggleAddCustomMode(on){
+  const fields=document.getElementById('mCustomFields');
+  const priceGroup=document.getElementById('mPriceGroup');
+  const sourceGroup=document.getElementById('mSourceGroup');
+  if(fields)fields.classList.toggle('hidden',!on);
+  // カスタムONのとき標準のセッション料金欄を隠す（流入経路は残す＝NOIC/resyncどの経路でもカスタム可）
+  if(priceGroup){
+    if(on){priceGroup.classList.add('hidden')}
+    else{
+      const isRoom=_modalSvc==='aden'||_modalSvc==='sub-svc';
+      const isSelfVar=(_modalSvc==='noic'||_modalSvc==='resync')&&_modalSrc==='self';
+      priceGroup.classList.toggle('hidden',!(isRoom||isSelfVar));
+    }
+  }
+  const box=document.getElementById('mCustomBox');
+  if(box){
+    box.style.borderColor=on?'var(--accent)':'var(--border)';
+    box.style.background=on?'#f0f9f4':'#fafafa';
+  }
 }
 function saveNewClient(){
   const name=document.getElementById('mName').value.trim();
@@ -1274,7 +1308,17 @@ function saveNewClient(){
   const isRoom=svc==='aden'||svc==='sub-svc';
   const isSelfVar=(svc==='noic'||svc==='resync')&&src==='self';
   const isHybrid=isRoom||isSelfVar;
-  const price=isHybrid?(parseInt(document.getElementById('mPrice').value)||SERVICES[svc].defaultPrice):SERVICES[svc].defaultPrice;
+  // カスタムモード（管理者のみ・新規追加時）
+  const customCb=document.getElementById('mCustomEnabled');
+  const useCustom=isMaster&&customCb&&customCb.checked;
+  let customSessionPrice=0,customReward=0,price;
+  if(useCustom){
+    customSessionPrice=parseInt(document.getElementById('mCustomPrice').value)||0;
+    customReward=parseInt(document.getElementById('mCustomReward').value)||0;
+    price=customSessionPrice;
+  }else{
+    price=isHybrid?(parseInt(document.getElementById('mPrice').value)||SERVICES[svc].defaultPrice):SERVICES[svc].defaultPrice;
+  }
   const ticket=parseInt(document.getElementById('mTicket').value)||0;
   const courses=[];
   if(ticket>0)courses.push({id:'tk_'+Date.now(),total:ticket,addedAt:Date.now()});
@@ -1286,7 +1330,10 @@ function saveNewClient(){
     sessionPrice:price,
     courses,
     staffId:_modalStaffId||currentStaffId,
-    createdAt:Date.now()
+    createdAt:Date.now(),
+    customEnabled:useCustom,
+    customSessionPrice:useCustom?customSessionPrice:0,
+    customReward:useCustom?customReward:0
   });
   save();closeModal();render();
 }
