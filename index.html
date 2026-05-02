@@ -698,7 +698,8 @@ function calcClientMonth(clientId,mk){
     }
   }
   const reward=count===0?0:unitReward*count;
-  const revenue=count===0?0:sessionPrice*count;
+  // モニターは無料対応のため売上は常に0円
+  const revenue=count===0?0:(c.source==='monitor'?0:sessionPrice*count);
   return{count,reward,unitReward,sessionPrice,roomFee,revenue,service:c.service,source:c.source,isCustom:!!c.customEnabled};
 }
 function calcMonth(mk,clientList){
@@ -787,11 +788,11 @@ function renderInput(){
       const r=calcClientMonth(c.id,mk);
       const tk=getTicketInfo(c.id);
       const hasTickets=tk.total>0;
-      // モニター以外はチケット登録必須。モニターは未登録でもセッション追加可能。
+      // 全サービス（モニター含む）コース登録必須
       const isMonitor=c.source==='monitor';
-      const canAdd=isMonitor?true:(hasTickets&&tk.remaining>0);
-      // 旧仕様で追加された無効カウント（コース未登録で count > 0）の警告
-      const orphanCount=!isMonitor&&!hasTickets&&s.count>0;
+      const canAdd=hasTickets&&tk.remaining>0;
+      // コース未登録なのに count > 0 のゴミデータ警告
+      const orphanCount=!hasTickets&&s.count>0;
       const pct=hasTickets?Math.min(100,Math.round(tk.used/tk.total*100)):0;
       const fillClass=hasTickets?(tk.remaining===0?'empty':tk.remaining<=2?'warn':''):'';
       const svcCls=svcClass(c.service);
@@ -816,10 +817,6 @@ function renderInput(){
           <div class="ticket-progress"><div class="fill ${fillClass}" style="width:${100-pct}%"></div></div>
           <span class="ticket-label">${tk.used}/${tk.total}</span>
           <button class="ticket-add" onclick="openAddTicket('${c.id}')">＋追加</button>
-        </div>
-        `:isMonitor?`
-        <div class="ticket-bar" style="background:#fef9e7">
-          <span class="ticket-label" style="color:#b7791f">モニター（チケット不要）</span>
         </div>
         `:`
         <div class="ticket-bar" style="background:#fff5f5">
@@ -1059,15 +1056,13 @@ function changeCount(clientId,delta){
   const newCount=s.count+delta;
   if(newCount<0)return;
   if(delta>0){
-    const c=D.clients.find(x=>x.id===clientId);
     const tk=getTicketInfo(clientId);
-    const isMonitor=c&&c.source==='monitor';
-    // モニター以外はコース登録必須
-    if(!isMonitor&&tk.total<=0){
+    // 全サービス（モニター含む）コース登録必須
+    if(tk.total<=0){
       alert('コース（チケット）が登録されていません。\nまずコースを登録してください。');
       return;
     }
-    if(tk.total>0&&tk.remaining<=0){
+    if(tk.remaining<=0){
       alert('チケットの残りがありません。\n追加購入してからカウントしてください。');
       return;
     }
