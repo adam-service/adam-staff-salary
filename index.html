@@ -296,7 +296,10 @@ label{display:block;font-size:12px;font-weight:600;color:var(--text-light);margi
 /* ===== Storage ===== */
 const SK='adam_staff_salary_v1';
 const API_URL_KEY='adam_staff_api_url';
-let API_URL=localStorage.getItem(API_URL_KEY)||'';
+// 本番のGAS URLをデフォルトに埋め込み。新規端末でもセットアップ不要で即同期される
+const DEFAULT_API_URL='https://script.google.com/macros/s/AKfycbwk3TSCevgJCCdGJQLnMd_vzZ-S0kb0-4dOHOdWkh1jmW_S0kqBlI81haMgTgE07oIFkA/exec';
+let API_URL=localStorage.getItem(API_URL_KEY)||DEFAULT_API_URL;
+if(!localStorage.getItem(API_URL_KEY))localStorage.setItem(API_URL_KEY,API_URL);
 let saveTimer=null;
 const SAVE_DELAY=1500;
 
@@ -522,7 +525,11 @@ function renderStaffSelector(){
   }
   sel.classList.remove('hidden');
   if(D.config.staff.length===0){
-    sel.innerHTML='<div class="empty">スタッフが未登録です。<br>管理者でログインして追加してください。</div>';
+    if(window.__bootDone){
+      sel.innerHTML='<div class="empty">スタッフが未登録です。<br>管理者でログインして追加してください。</div>';
+    }else{
+      sel.innerHTML='<div class="empty">読み込み中...</div>';
+    }
     return;
   }
   sel.innerHTML=D.config.staff.map(s=>`<button onclick="selectStaffForLogin('${s.id}')">${esc(s.name)}</button>`).join('');
@@ -1445,10 +1452,12 @@ renderStaffSelector();
       }
     }
     // クラウド取得後、ロック画面のスタッフ選択を最新データで再描画
+    window.__bootDone=true;
     if(document.getElementById('lockScreen') && !document.getElementById('lockScreen').classList.contains('hidden')){
       renderStaffSelector();
     }
   }else{
+    window.__bootDone=true;
     document.getElementById('setupOverlay').classList.add('open');
   }
 })();
