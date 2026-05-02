@@ -790,6 +790,8 @@ function renderInput(){
       // モニター以外はチケット登録必須。モニターは未登録でもセッション追加可能。
       const isMonitor=c.source==='monitor';
       const canAdd=isMonitor?true:(hasTickets&&tk.remaining>0);
+      // 旧仕様で追加された無効カウント（コース未登録で count > 0）の警告
+      const orphanCount=!isMonitor&&!hasTickets&&s.count>0;
       const pct=hasTickets?Math.min(100,Math.round(tk.used/tk.total*100)):0;
       const fillClass=hasTickets?(tk.remaining===0?'empty':tk.remaining<=2?'warn':''):'';
       const svcCls=svcClass(c.service);
@@ -824,6 +826,7 @@ function renderInput(){
           <span class="ticket-label" style="color:#c0392b;font-weight:600">⚠️ コース未登録 — セッション追加不可</span>
           <button class="ticket-add" onclick="openAddTicket('${c.id}')">＋コースを登録</button>
         </div>
+        ${orphanCount?`<div style="background:#ffe4e1;border:1px solid #c0392b;border-radius:6px;padding:8px;margin-top:6px;font-size:12px;color:#c0392b">⚠️ コース未登録なのに ${s.count}回 のセッションが記録されています。コースを登録するか、${isMaster?'<button onclick="resetSessionCount(\''+c.id+'\')" style="margin-left:6px;padding:2px 8px;background:#c0392b;color:#fff;border:none;border-radius:4px;cursor:pointer">回数を0にリセット</button>':'管理者にリセットを依頼してください。'}</div>`:''}
         `}
         <div class="client-meta">
           ${c.customEnabled?`カスタム: 単価 ¥${r.sessionPrice.toLocaleString()} ／ 報酬 ¥${r.unitReward.toLocaleString()}/回`:isRoomDeduction?`セッション料: ¥${r.sessionPrice.toLocaleString()} − ルーム料 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回`:isSelfVariable?`セッション料: ¥${r.sessionPrice.toLocaleString()} − 控除 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回（自己集客）`:`報酬単価: ¥${r.unitReward.toLocaleString()}/回（${sourceLabel(c.source)}）`}
@@ -1039,6 +1042,16 @@ function renderSettings(){
 }
 
 /* ===== Actions ===== */
+function resetSessionCount(clientId){
+  if(!isMaster){alert('管理者のみ操作可能です');return}
+  if(!confirm('このゲストの今月のセッション回数を0にリセットしますか？'))return;
+  const mk=currentMonth;
+  if(D.sessions[mk]&&D.sessions[mk][clientId]){
+    delete D.sessions[mk][clientId];
+    if(Object.keys(D.sessions[mk]).length===0)delete D.sessions[mk];
+  }
+  save();render();
+}
 function changeCount(clientId,delta){
   const mk=currentMonth;
   if(isLocked(mk)&&!isMaster){alert('この月は確定済みのため編集できません');return}
