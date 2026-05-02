@@ -410,24 +410,34 @@ function updateSyncStatus(state,text){
   dot.className='sync-dot '+state;
   txt.textContent=text||{online:'接続済み',syncing:'同期中...',offline:'ローカル',error:'接続エラー'}[state]||'';
 }
-async function fetchFromCloud(){
+async function fetchFromCloud(retries){
   if(!API_URL)return null;
+  if(retries==null)retries=2;
   updateSyncStatus('syncing','読み込み中...');
   try{
-    const res=await fetch(API_URL+'?action=getData');
+    const res=await fetch(API_URL+'?action=getData',{cache:'no-store'});
     if(!res.ok)throw new Error('HTTP '+res.status);
     const data=await res.json();
-    if(data.error)throw new Error(data.error);
+    if(data.error){
+      // BUSY なら自動リトライ（短い待機後）
+      if((data.error==='BUSY'||/混み合/.test(data.error))&&retries>0){
+        await new Promise(r=>setTimeout(r,1500));
+        return fetchFromCloud(retries-1);
+      }
+      throw new Error(data.error);
+    }
     updateSyncStatus('online','接続済み');
     return data;
   }catch(e){
-    console.error('Cloud fetch error:',e);
-    updateSyncStatus('error','接続エラー');
+    console.warn('Cloud fetch error:',e);
+    // ステータスは「ローカル」表示にとどめる（接続エラー赤表示は出さない）
+    updateSyncStatus('offline','一時的に未接続（自動再試行）');
     return null;
   }
 }
-async function saveToCloud(){
+async function saveToCloud(retries){
   if(!API_URL)return false;
+  if(retries==null)retries=2;
   updateSyncStatus('syncing','保存中...');
   try{
     const res=await fetch(API_URL+'?action=saveData',{
@@ -445,13 +455,22 @@ async function saveToCloud(){
       }
       throw new Error('HTTP '+res.status);
     }
-    if(result.error)throw new Error(result.error);
+    if(result.error){
+      if((result.error==='BUSY'||/混み合/.test(result.error))&&retries>0){
+        await new Promise(r=>setTimeout(r,2000));
+        return saveToCloud(retries-1);
+      }
+      throw new Error(result.error);
+    }
     updateSyncStatus('online','保存完了');
     setTimeout(()=>updateSyncStatus('online','接続済み'),2000);
     return true;
   }catch(e){
-    console.error('Cloud save error:',e);
-    updateSyncStatus('error','保存失敗');
+    console.warn('Cloud save error:',e);
+    // 保存失敗時もローカルに残るので、エラーではなく「未保存（再試行予定）」表示
+    updateSyncStatus('offline','未保存（自動再試行）');
+    // 5秒後にもう一度試す
+    if(retries>0)setTimeout(()=>saveToCloud(retries-1),5000);
     return false;
   }
 }
@@ -1695,7 +1714,7 @@ async function autoSyncTick(){
 }
 function startAutoSync(){
   if(_autoSyncTimer)clearInterval(_autoSyncTimer);
-  _autoSyncTimer=setInterval(autoSyncTick,30000);
+  _autoSyncTimer=setInterval(autoSyncTick,60000);
 }
 startAutoSync();
 </script>

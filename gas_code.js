@@ -17,23 +17,24 @@ function doGet(e){return handleRequest(e)}
 function doPost(e){return handleRequest(e)}
 
 function handleRequest(e){
+  const action=(e&&e.parameter&&e.parameter.action)||'';
+  // 読み取りはロック不要（同時アクセスでブロックされないように）
+  if(action==='getData'){
+    try{return jsonResponse(getAllData())}
+    catch(err){return jsonResponse({error:err.message})}
+  }
+  // 書き込みのみロック
   const lock=LockService.getScriptLock();
-  try{
-    lock.waitLock(10000);
-  }catch(err){
-    return jsonResponse({error:'サーバーが混み合っています。少し待ってから再試行してください。'});
+  try{lock.waitLock(15000)}catch(err){
+    return jsonResponse({error:'BUSY'});
   }
   try{
-    const action=(e&&e.parameter&&e.parameter.action)||'';
-    if(action==='getData'){
-      return jsonResponse(getAllData());
-    }else if(action==='saveData'){
+    if(action==='saveData'){
       const body=JSON.parse(e.postData.contents);
       saveAllData(body);
       return jsonResponse({success:true});
-    }else{
-      return jsonResponse({error:'Unknown action: '+action});
     }
+    return jsonResponse({error:'Unknown action: '+action});
   }catch(err){
     return jsonResponse({error:err.message});
   }finally{
