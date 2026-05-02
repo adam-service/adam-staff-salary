@@ -1286,25 +1286,33 @@ function openEditClient(id){
   const editIsHybrid=editIsRoom||editIsSelfVar;
   const hasSource=SERVICES[c.service].hasSource;
   const staffPicker=isMaster?`<div class="form-group"><label>担当スタッフ</label><select id="eStaff" onchange="_modalStaffId=this.value">${D.config.staff.map(s=>`<option value="${s.id}" ${s.id===_modalStaffId?'selected':''}>${esc(s.name)}</option>`).join('')}</select></div>`:'';
+  const sourceLabels={ad:'広告経由',self:'自己集客',monitor:'モニター'};
+  const lockNote='<span style="font-size:11px;color:var(--text-light)">🔒 管理者のみ変更可</span>';
+  const serviceField=isMaster
+    ? `<div class="svc-radio-group">${buildServiceRadios(c.service)}</div>`
+    : `<div style="padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:#f8f8f8;color:var(--text);font-weight:600">${SERVICES[c.service].label}</div>`;
+  const sourceField=isMaster
+    ? `<div class="source-radio-group">
+        <div class="source-radio ${_modalSrc==='ad'?'active':''}" data-src="ad" onclick="selectSource('ad')">広告経由</div>
+        <div class="source-radio ${_modalSrc==='self'?'active':''}" data-src="self" onclick="selectSource('self')">自己集客</div>
+        <div class="source-radio ${_modalSrc==='monitor'?'active':''}" data-src="monitor" onclick="selectSource('monitor')">モニター</div>
+      </div>`
+    : `<div style="padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:#f8f8f8;color:var(--text);font-weight:600">${sourceLabels[c.source]||'—'}</div>`;
   const html=`
     <div class="modal-header"><h2>ゲスト編集</h2><button class="modal-close" onclick="closeModal()">×</button></div>
     <div class="form-group"><label>ゲスト名</label><input id="eName" type="text" value="${esc(c.name)}"></div>
     ${staffPicker}
-    <div class="form-group"><label>サービス区分</label>
-      <div class="svc-radio-group">${buildServiceRadios(c.service)}</div>
+    <div class="form-group"><label>サービス区分${!isMaster?' '+lockNote:''}</label>
+      ${serviceField}
     </div>
-    <div class="form-group ${hasSource?'':'hidden'}" id="mSourceGroup"><label>流入経路</label>
-      <div class="source-radio-group">
-        <div class="source-radio ${_modalSrc==='ad'?'active':''}" data-src="ad" onclick="selectSource('ad')">広告経由</div>
-        <div class="source-radio ${_modalSrc==='self'?'active':''}" data-src="self" onclick="selectSource('self')">自己集客</div>
-        <div class="source-radio ${_modalSrc==='monitor'?'active':''}" data-src="monitor" onclick="selectSource('monitor')">モニター</div>
-      </div>
+    <div class="form-group ${hasSource?'':'hidden'}" id="mSourceGroup"><label>流入経路${!isMaster?' '+lockNote:''}</label>
+      ${sourceField}
     </div>
-    <div class="form-group ${editIsHybrid?'':'hidden'}" id="mPriceGroup"><label id="mPriceLabel">セッション料金（円）${!isMaster?' <span style="font-size:11px;color:var(--text-light)">🔒 管理者のみ変更可</span>':''}</label><input id="ePrice" type="number" data-user-touched="1" value="${c.sessionPrice||SERVICES[c.service].defaultPrice||18000}" ${!isMaster?'disabled':''}></div>
+    <div class="form-group ${editIsHybrid?'':'hidden'}" id="mPriceGroup"><label id="mPriceLabel">セッション料金（円）${!isMaster?' '+lockNote:''}</label><input id="ePrice" type="number" data-user-touched="1" value="${c.sessionPrice||SERVICES[c.service].defaultPrice||18000}" ${!isMaster?'disabled':''}></div>
     ${coursesHtml}
     <div class="form-group"><label>🎫 チケット追加（回数）</label><input id="eNewTicket" type="number" placeholder="追加する回数を入力" inputmode="numeric" min="0"></div>
     <button class="btn btn-primary" onclick="saveEditClient('${c.id}')">保存する</button>
-    <div class="delete-zone"><button class="btn btn-danger" onclick="deleteClient('${c.id}')">このゲストを削除</button></div>`;
+    ${isMaster?`<div class="delete-zone"><button class="btn btn-danger" onclick="deleteClient('${c.id}')">このゲストを削除</button></div>`:'<div style="margin-top:16px;padding:10px;border:1px dashed var(--border);border-radius:8px;text-align:center;color:var(--text-light);font-size:12px">🔒 ゲストの削除は管理者のみ可能です</div>'}`;
   openModal(html);
   setTimeout(refreshModalServiceUI,10);
 }
@@ -1319,8 +1327,12 @@ function deleteCourseInEdit(clientId,idx){
 function saveEditClient(id){
   const c=D.clients.find(x=>x.id===id);if(!c)return;
   c.name=document.getElementById('eName').value.trim();
-  c.service=_modalSvc;
-  c.source=SERVICES[_modalSvc].hasSource?_modalSrc:null;
+  // 不正防止：サービス区分・流入経路は管理者のみ変更可
+  if(isMaster){
+    c.service=_modalSvc;
+    c.source=SERVICES[_modalSvc].hasSource?_modalSrc:null;
+  }
+  // スタッフは c.service / c.source を維持（既存値）
   if(isMaster&&_modalStaffId)c.staffId=_modalStaffId;
   const isRoom=c.service==='aden'||c.service==='sub-svc';
   const isSelfVar=(c.service==='noic'||c.service==='resync')&&c.source==='self';
@@ -1339,6 +1351,7 @@ function saveEditClient(id){
   save();closeModal();render();
 }
 function deleteClient(id){
+  if(!isMaster){alert('ゲストの削除は管理者のみ可能です');return}
   if(!confirm('このゲストを削除しますか？\nセッションデータも削除されます。'))return;
   D.clients=D.clients.filter(x=>x.id!==id);
   Object.keys(D.sessions).forEach(mk=>{if(D.sessions[mk][id])delete D.sessions[mk][id]});
