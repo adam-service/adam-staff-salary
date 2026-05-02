@@ -455,8 +455,10 @@ async function saveToCloud(){
     return false;
   }
 }
+let _lastLocalSaveAt=0;
 function save(){
   saveLocal();
+  _lastLocalSaveAt=Date.now();
   if(API_URL){
     if(saveTimer)clearTimeout(saveTimer);
     saveTimer=setTimeout(()=>saveToCloud(),SAVE_DELAY);
@@ -1441,7 +1443,19 @@ renderStaffSelector();
         if((!data.config.staff||data.config.staff.length===0)&&D.config.staff&&D.config.staff.length>0){
           data.config.staff=D.config.staff;
         }
+        // ローカルにあってクラウドに無いゲスト・セッションをマージ（未送信の変更を保護）
+        const cloudClientIds=new Set(data.clients.map(c=>c.id));
+        (D.clients||[]).forEach(c=>{if(!cloudClientIds.has(c.id))data.clients.push(c)});
+        Object.keys(D.sessions||{}).forEach(mk=>{
+          if(!data.sessions[mk])data.sessions[mk]={};
+          Object.keys(D.sessions[mk]).forEach(cid=>{
+            if(!data.sessions[mk][cid])data.sessions[mk][cid]=D.sessions[mk][cid];
+          });
+        });
+        // ローカルに未送信のデータがあった場合はクラウドへ送信
+        const hadUnsentLocal=(D.clients||[]).some(c=>!cloudClientIds.has(c.id));
         D=data;saveLocal();
+        if(hadUnsentLocal&&API_URL)saveToCloud();
       }else if(localHasClients){
         console.log('Cloud is empty but local has data — pushing local to cloud');
         saveToCloud();
@@ -1470,25 +1484,37 @@ renderStaffSelector();
 let _autoSyncTimer=null;
 async function autoSyncTick(){
   if(!API_URL)return;
+  // ローカルで最近編集した／クラウド送信中はスキップ（ローカルの変更がクラウド側に反映されてからフェッチする）
+  if(saveTimer)return;
+  if(Date.now()-_lastLocalSaveAt<10000)return;
+  // モーダル（編集中）の間も同期しない
+  if(document.querySelector('.modal-overlay.show'))return;
   try{
     const data=await fetchFromCloud();
     if(!data)return;
     migrateData(data);
-    // クラウドのスタッフが空でローカルが持っているときは保護
+    // ローカル優先：ローカルに有るがクラウドに無いスタッフ／ゲスト／チケットを保護
     if((!data.config.staff||data.config.staff.length===0)&&D.config.staff&&D.config.staff.length>0){
       data.config.staff=D.config.staff;
     }
-    // ローカルに未保存の編集中データがあれば（=ロック画面以外で操作中）クラウドを優先しすぎない
+    // ローカルにあってクラウドに無いゲストはマージ（ローカル優先）
+    const cloudClientIds=new Set((data.clients||[]).map(c=>c.id));
+    (D.clients||[]).forEach(c=>{
+      if(!cloudClientIds.has(c.id))data.clients.push(c);
+    });
+    // ローカルにあってクラウドに無いセッション数もマージ
+    Object.keys(D.sessions||{}).forEach(mk=>{
+      if(!data.sessions[mk])data.sessions[mk]={};
+      Object.keys(D.sessions[mk]).forEach(cid=>{
+        if(!data.sessions[mk][cid])data.sessions[mk][cid]=D.sessions[mk][cid];
+      });
+    });
     const lockOpen=document.getElementById('lockScreen') && !document.getElementById('lockScreen').classList.contains('hidden');
     if(lockOpen){
       D=data;saveLocal();renderStaffSelector();
     }else{
-      // 通常画面ではクラウドのスタッフ・価格・他スタッフのデータも同期
-      const prevStaffId=currentStaffId;
       D=data;saveLocal();
-      // 現在ログイン中のスタッフが消えていないかチェック
       if(currentStaffId&&!findStaff(currentStaffId)){
-        // 自分のスタッフが管理者によって削除された
         alert('スタッフ情報が更新されました。再ログインしてください。');
         logout();return;
       }
