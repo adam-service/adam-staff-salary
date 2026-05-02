@@ -18,7 +18,8 @@
   --bg:#f0f2f5;--card:#fff;--text:#2c3e50;--text-light:#7f8c8d;
   --border:#e0e3e8;--shadow:0 2px 8px rgba(0,0,0,.08);
 }
-body{font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Hiragino Kaku Gothic ProN',Meiryo,sans-serif;background:var(--bg);color:var(--text);-webkit-tap-highlight-color:transparent;overflow-x:hidden}
+body{font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Hiragino Kaku Gothic ProN',Meiryo,sans-serif;background:var(--bg);color:var(--text);-webkit-tap-highlight-color:transparent;overflow-x:hidden;touch-action:manipulation}
+button,a,input,select,textarea,.svc-radio,.source-radio,.staff-selector button,.role-switch button{touch-action:manipulation}
 .header{position:sticky;top:0;z-index:100;background:linear-gradient(135deg,var(--primary),var(--primary-light));color:#fff;padding:14px 16px 10px;box-shadow:0 2px 12px rgba(0,0,0,.15)}
 .header h1{font-size:15px;font-weight:600;opacity:.9;letter-spacing:.5px}
 .header .subtitle{font-size:12px;opacity:.7;margin-top:2px}
@@ -129,7 +130,7 @@ label{display:block;font-size:12px;font-weight:600;color:var(--text-light);margi
 .pin-dot{width:16px;height:16px;border-radius:50%;border:2px solid rgba(255,255,255,.5);transition:.2s}
 .pin-dot.filled{background:#fff;border-color:#fff}
 .pin-pad{display:grid;grid-template-columns:repeat(3,72px);gap:10px}
-.pin-key{width:72px;height:56px;border:none;border-radius:12px;background:rgba(255,255,255,.15);color:#fff;font-size:24px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.15s}
+.pin-key{width:72px;height:56px;border:none;border-radius:12px;background:rgba(255,255,255,.15);color:#fff;font-size:24px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.15s;touch-action:manipulation;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
 .pin-key:active{background:rgba(255,255,255,.3)}
 .pin-key.del{font-size:14px;font-weight:700}
 .pin-key.empty{background:transparent;cursor:default}
