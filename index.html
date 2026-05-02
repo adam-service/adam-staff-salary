@@ -1457,8 +1457,11 @@ renderStaffSelector();
       renderStaffSelector();
     }
   }else{
+    // API_URLは常にデフォルトが入るのでここには来ない想定。念のためフォールバック。
     window.__bootDone=true;
-    document.getElementById('setupOverlay').classList.add('open');
+    API_URL=DEFAULT_API_URL;
+    localStorage.setItem(API_URL_KEY,API_URL);
+    location.reload();
   }
 })();
 
