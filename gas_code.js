@@ -131,7 +131,7 @@ function getAllData(){
   }
 
   // Clients
-  const clSh=getOrCreateSheet('ゲスト',['id','name','service','source','sessionPrice','courses','createdAt','staffId']);
+  const clSh=getOrCreateSheet('ゲスト',['id','name','service','source','sessionPrice','courses','createdAt','staffId','customEnabled','customSessionPrice','customReward']);
   const defaultStaffId=config.staff[0]?config.staff[0].id:null;
   const clients=sheetToArray(clSh).map(r=>({
     id:String(r.id),
@@ -141,7 +141,10 @@ function getAllData(){
     sessionPrice:Number(r.sessionPrice)||0,
     courses:r.courses?JSON.parse(r.courses):[],
     createdAt:Number(r.createdAt)||0,
-    staffId:r.staffId?String(r.staffId):defaultStaffId
+    staffId:r.staffId?String(r.staffId):defaultStaffId,
+    customEnabled:r.customEnabled===true||r.customEnabled==='true'||r.customEnabled===1,
+    customSessionPrice:Number(r.customSessionPrice)||0,
+    customReward:Number(r.customReward)||0
   }));
 
   // Sessions
@@ -181,14 +184,15 @@ function saveAllData(D){
   cfgSh.getRange(2,1,cfgData.length,2).setValues(cfgData);
 
   // Clients
-  const clSh=getOrCreateSheet('ゲスト',['id','name','service','source','sessionPrice','courses','createdAt','staffId']);
-  if(clSh.getLastRow()>1)clSh.getRange(2,1,clSh.getLastRow()-1,8).clearContent();
+  const clSh=getOrCreateSheet('ゲスト',['id','name','service','source','sessionPrice','courses','createdAt','staffId','customEnabled','customSessionPrice','customReward']);
+  if(clSh.getLastRow()>1)clSh.getRange(2,1,clSh.getLastRow()-1,11).clearContent();
   if(D.clients&&D.clients.length>0){
     const clData=D.clients.map(c=>[
       c.id,c.name,c.service,c.source||'',c.sessionPrice||0,
-      JSON.stringify(c.courses||[]),c.createdAt||0,c.staffId||''
+      JSON.stringify(c.courses||[]),c.createdAt||0,c.staffId||'',
+      c.customEnabled?true:false,c.customSessionPrice||0,c.customReward||0
     ]);
-    clSh.getRange(2,1,clData.length,8).setValues(clData);
+    clSh.getRange(2,1,clData.length,11).setValues(clData);
   }
 
   // Sessions
