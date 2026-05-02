@@ -685,13 +685,7 @@ function calcClientMonth(clientId,mk){
     unitReward=Math.max(0,sessionPrice-roomFee);
   }else if(c.service==='noic'||c.service==='resync'){
     const p=D.config.prices[c.service];
-    // ロイヤルティ昇格：広告経由でも累計「実施済み」セッションが25回超なら自己集客レートに昇格
-    // 注：実施済み回数ベースなので、回数を戻すと自動で昇格解除される（不正防止）
-    const consumedTotal=getConsumedTotal(c.id);
-    const promoted=c.source==='ad'&&consumedTotal>25;
-    if(promoted){
-      unitReward=p.self||10000;
-    }else if(c.source==='ad'){
+    if(c.source==='ad'){
       unitReward=p.ad||0;
     }else if(c.source==='monitor'){
       unitReward=p.monitor||0;
@@ -703,13 +697,29 @@ function calcClientMonth(clientId,mk){
       unitReward=Math.max(0,sessionPrice-deduction);
     }
   }
-  const reward=count===0?0:unitReward*count;
+  // 報酬計算：広告経由は「26回目以降」のみ自己集客レート¥10,000に昇格
+  let reward=0;
+  let adSessions=count,promotedSessions=0;
+  if(count>0){
+    if((c.service==='noic'||c.service==='resync')&&c.source==='ad'&&!c.customEnabled){
+      const p=D.config.prices[c.service];
+      const adRate=p.ad||6000;
+      const selfRate=p.self||10000;
+      const consumedBefore=getConsumedTotal(c.id)-count; // 今月分を除いた累計
+      const remainingAdQuota=Math.max(0,25-Math.max(0,consumedBefore));
+      adSessions=Math.min(count,remainingAdQuota);
+      promotedSessions=count-adSessions;
+      reward=adSessions*adRate+promotedSessions*selfRate;
+    }else{
+      reward=unitReward*count;
+    }
+  }
   // モニターは無料対応のため売上は常に0円
   const revenue=count===0?0:(c.source==='monitor'?0:sessionPrice*count);
-  // 昇格判定（広告→自己レート）：実施済みセッション数ベース
+  // 昇格判定（広告→自己レート）：26回目以降が含まれているか
+  const promoted=promotedSessions>0;
   const consumedTotalAll=getConsumedTotal(c.id);
-  const promoted=(c.service==='noic'||c.service==='resync')&&c.source==='ad'&&consumedTotalAll>25;
-  return{count,reward,unitReward,sessionPrice,roomFee,revenue,service:c.service,source:c.source,isCustom:!!c.customEnabled,promoted,consumedTotal:consumedTotalAll};
+  return{count,reward,unitReward,sessionPrice,roomFee,revenue,service:c.service,source:c.source,isCustom:!!c.customEnabled,promoted,consumedTotal:consumedTotalAll,adSessions,promotedSessions};
 }
 function getConsumedTotal(clientId){
   let total=0;
@@ -844,7 +854,7 @@ function renderInput(){
         ${orphanCount?`<div style="background:#ffe4e1;border:1px solid #c0392b;border-radius:6px;padding:8px;margin-top:6px;font-size:12px;color:#c0392b">⚠️ コース未登録なのに ${s.count}回 のセッションが記録されています。コースを登録するか、${isMaster?'<button onclick="resetSessionCount(\''+c.id+'\')" style="margin-left:6px;padding:2px 8px;background:#c0392b;color:#fff;border:none;border-radius:4px;cursor:pointer">回数を0にリセット</button>':'管理者にリセットを依頼してください。'}</div>`:''}
         `}
         <div class="client-meta">
-          ${c.customEnabled?`カスタム: 単価 ¥${r.sessionPrice.toLocaleString()} ／ 報酬 ¥${r.unitReward.toLocaleString()}/回`:isRoomDeduction?`セッション料: ¥${r.sessionPrice.toLocaleString()} − ルーム料 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回`:isSelfVariable?`セッション料: ¥${r.sessionPrice.toLocaleString()} − 控除 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回（自己集客）`:r.promoted?`実施済${r.consumedTotal}回 → 自己集客レート昇格：¥${r.unitReward.toLocaleString()}/回`:`報酬単価: ¥${r.unitReward.toLocaleString()}/回（${sourceLabel(c.source)}）`}
+          ${c.customEnabled?`カスタム: 単価 ¥${r.sessionPrice.toLocaleString()} ／ 報酬 ¥${r.unitReward.toLocaleString()}/回`:isRoomDeduction?`セッション料: ¥${r.sessionPrice.toLocaleString()} − ルーム料 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回`:isSelfVariable?`セッション料: ¥${r.sessionPrice.toLocaleString()} − 控除 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回（自己集客）`:r.promoted?`累計${r.consumedTotal}回（25回目まで¥6,000・26回目以降¥10,000） — 今月: 通常${r.adSessions}回＋昇格${r.promotedSessions}回`:`報酬単価: ¥${r.unitReward.toLocaleString()}/回（${sourceLabel(c.source)}）`}
         </div>
         <div class="session-row">
           <div class="session-controls">
@@ -854,7 +864,7 @@ function renderInput(){
           </div>
           <div class="session-reward">
             <div class="amount positive">¥${r.reward.toLocaleString()}</div>
-            <div class="unit-price">@¥${r.unitReward.toLocaleString()}/回</div>
+            <div class="unit-price">${r.promoted&&r.adSessions>0?`通常${r.adSessions}+昇格${r.promotedSessions}`:`@¥${r.unitReward.toLocaleString()}/回`}</div>
             ${r.count>0?`<div style="font-size:10px;color:var(--text-light);margin-top:2px">売上 ¥${r.revenue.toLocaleString()}</div>`:''}
           </div>
         </div>
