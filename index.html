@@ -1431,10 +1431,50 @@ renderStaffSelector();
         D=data;saveLocal();
       }
     }
+    // クラウド取得後、ロック画面のスタッフ選択を最新データで再描画
+    if(document.getElementById('lockScreen') && !document.getElementById('lockScreen').classList.contains('hidden')){
+      renderStaffSelector();
+    }
   }else{
     document.getElementById('setupOverlay').classList.add('open');
   }
 })();
+
+/* ===== 自動同期（30秒ごとにクラウド最新を取得して再描画） ===== */
+let _autoSyncTimer=null;
+async function autoSyncTick(){
+  if(!API_URL)return;
+  try{
+    const data=await fetchFromCloud();
+    if(!data)return;
+    migrateData(data);
+    // クラウドのスタッフが空でローカルが持っているときは保護
+    if((!data.config.staff||data.config.staff.length===0)&&D.config.staff&&D.config.staff.length>0){
+      data.config.staff=D.config.staff;
+    }
+    // ローカルに未保存の編集中データがあれば（=ロック画面以外で操作中）クラウドを優先しすぎない
+    const lockOpen=document.getElementById('lockScreen') && !document.getElementById('lockScreen').classList.contains('hidden');
+    if(lockOpen){
+      D=data;saveLocal();renderStaffSelector();
+    }else{
+      // 通常画面ではクラウドのスタッフ・価格・他スタッフのデータも同期
+      const prevStaffId=currentStaffId;
+      D=data;saveLocal();
+      // 現在ログイン中のスタッフが消えていないかチェック
+      if(currentStaffId&&!findStaff(currentStaffId)){
+        // 自分のスタッフが管理者によって削除された
+        alert('スタッフ情報が更新されました。再ログインしてください。');
+        logout();return;
+      }
+      render();
+    }
+  }catch(e){console.warn('autoSync failed',e)}
+}
+function startAutoSync(){
+  if(_autoSyncTimer)clearInterval(_autoSyncTimer);
+  _autoSyncTimer=setInterval(autoSyncTick,30000);
+}
+startAutoSync();
 </script>
 </body>
 </html>
