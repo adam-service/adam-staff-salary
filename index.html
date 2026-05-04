@@ -716,19 +716,25 @@ function calcClientMonth(clientId,mk){
       unitReward=Math.max(0,sessionPrice-deduction);
     }
   }
-  // 報酬計算：広告経由は「26回目以降」のみ自己集客レート¥10,000に昇格
+  // 報酬計算：広告経由は「26回目以降」のみ自己集客レートに昇格
+  // 昇格レート = セッション料金 − ¥8,000（自己集客と同じ計算式）
+  // 例: 通常¥18,000 → 報酬¥10,000 / ¥15,000 → 報酬¥7,000
   let reward=0;
   let adSessions=count,promotedSessions=0;
+  let promotedRate=0;
   if(count>0){
     if((c.service==='noic'||c.service==='resync')&&c.source==='ad'&&!c.customEnabled){
       const p=D.config.prices[c.service];
       const adRate=p.ad||6000;
-      const selfRate=p.self||10000;
-      const consumedBefore=getConsumedTotal(c.id)-count; // 今月分を除いた累計
+      const basePrice=SERVICES[c.service].defaultPrice||18000;
+      const baseReward=p.self||10000;
+      const deduction=basePrice-baseReward; // 通常 8000
+      promotedRate=Math.max(0,sessionPrice-deduction);
+      const consumedBefore=getConsumedTotal(c.id)-count;
       const remainingAdQuota=Math.max(0,25-Math.max(0,consumedBefore));
       adSessions=Math.min(count,remainingAdQuota);
       promotedSessions=count-adSessions;
-      reward=adSessions*adRate+promotedSessions*selfRate;
+      reward=adSessions*adRate+promotedSessions*promotedRate;
     }else{
       reward=unitReward*count;
     }
@@ -741,14 +747,13 @@ function calcClientMonth(clientId,mk){
   // 表示用 unitReward：今月の実際のレートを反映
   let displayUnitReward=unitReward;
   if(promoted){
-    const selfRate=(D.config.prices[c.service]?.self)||10000;
     if(adSessions===0){
-      displayUnitReward=selfRate; // 全て昇格レート
+      displayUnitReward=promotedRate; // 全て昇格レート（セッション料金から計算）
     }else{
       displayUnitReward=Math.round(reward/count); // 混在時は平均
     }
   }
-  return{count,reward,unitReward:displayUnitReward,baseUnitReward:unitReward,sessionPrice,roomFee,revenue,service:c.service,source:c.source,isCustom:!!c.customEnabled,promoted,consumedTotal:consumedTotalAll,adSessions,promotedSessions};
+  return{count,reward,unitReward:displayUnitReward,baseUnitReward:unitReward,sessionPrice,roomFee,revenue,service:c.service,source:c.source,isCustom:!!c.customEnabled,promoted,consumedTotal:consumedTotalAll,adSessions,promotedSessions,promotedRate};
 }
 function getConsumedTotal(clientId){
   let total=0;
@@ -883,7 +888,7 @@ function renderInput(){
         ${orphanCount?`<div style="background:#ffe4e1;border:1px solid #c0392b;border-radius:6px;padding:8px;margin-top:6px;font-size:12px;color:#c0392b">⚠️ コース未登録なのに ${s.count}回 のセッションが記録されています。コースを登録するか、${isMaster?'<button onclick="resetSessionCount(\''+c.id+'\')" style="margin-left:6px;padding:2px 8px;background:#c0392b;color:#fff;border:none;border-radius:4px;cursor:pointer">回数を0にリセット</button>':'管理者にリセットを依頼してください。'}</div>`:''}
         `}
         <div class="client-meta">
-          ${c.customEnabled?`カスタム: 単価 ¥${r.sessionPrice.toLocaleString()} ／ 報酬 ¥${r.unitReward.toLocaleString()}/回`:isRoomDeduction?`セッション料: ¥${r.sessionPrice.toLocaleString()} − ルーム料 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回`:isSelfVariable?`セッション料: ¥${r.sessionPrice.toLocaleString()} − 控除 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回（自己集客）`:r.promoted?`累計${r.consumedTotal}回（25回目まで¥6,000・26回目以降¥10,000） — 今月: 通常${r.adSessions}回＋昇格${r.promotedSessions}回`:`報酬単価: ¥${r.unitReward.toLocaleString()}/回（${sourceLabel(c.source)}）`}
+          ${c.customEnabled?`カスタム: 単価 ¥${r.sessionPrice.toLocaleString()} ／ 報酬 ¥${r.unitReward.toLocaleString()}/回`:isRoomDeduction?`セッション料: ¥${r.sessionPrice.toLocaleString()} − ルーム料 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回`:isSelfVariable?`セッション料: ¥${r.sessionPrice.toLocaleString()} − 控除 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回（自己集客）`:r.promoted?`累計${r.consumedTotal}回（25回目まで¥6,000・26回目以降は¥${r.sessionPrice.toLocaleString()}−¥8,000=¥${r.promotedRate.toLocaleString()}） — 今月: 通常${r.adSessions}回＋昇格${r.promotedSessions}回`:`報酬単価: ¥${r.unitReward.toLocaleString()}/回（${sourceLabel(c.source)}）`}
         </div>
         <div class="session-row">
           <div class="session-controls">
@@ -893,7 +898,7 @@ function renderInput(){
           </div>
           <div class="session-reward">
             <div class="amount positive">¥${r.reward.toLocaleString()}</div>
-            <div class="unit-price">${r.promoted&&r.adSessions>0?`通常${r.adSessions}回×¥6,000+昇格${r.promotedSessions}回×¥10,000`:r.promoted?`@¥${r.unitReward.toLocaleString()}/回（⭐昇格）`:`@¥${r.unitReward.toLocaleString()}/回`}</div>
+            <div class="unit-price">${r.promoted&&r.adSessions>0?`通常${r.adSessions}回×¥6,000+昇格${r.promotedSessions}回×¥${r.promotedRate.toLocaleString()}`:r.promoted?`@¥${r.unitReward.toLocaleString()}/回（⭐昇格）`:`@¥${r.unitReward.toLocaleString()}/回`}</div>
             ${r.count>0?`<div style="font-size:10px;color:var(--text-light);margin-top:2px">売上 ¥${r.revenue.toLocaleString()}</div>`:''}
           </div>
         </div>
@@ -994,7 +999,15 @@ function renderClients(){
     else{
       const p=D.config.prices[c.service];
       const unit=c.source==='ad'?p.ad:c.source==='monitor'?p.monitor:p.self;
-      metaText='報酬単価 ¥'+(unit||0).toLocaleString()+'/回';
+      // NOIC/resync 広告経由でセッション料金が標準と異なる場合は併記（25回超え昇格時の報酬計算用）
+      const isAd=c.source==='ad';
+      const isNonDefault=isAd&&c.sessionPrice&&c.sessionPrice!==(SERVICES[c.service].defaultPrice||18000);
+      if(isNonDefault){
+        const promotedRate=Math.max(0,c.sessionPrice-((SERVICES[c.service].defaultPrice||18000)-(p.self||10000)));
+        metaText='セッション料 ¥'+c.sessionPrice.toLocaleString()+' ／ 報酬 ¥'+(unit||0).toLocaleString()+'/回（昇格時 ¥'+promotedRate.toLocaleString()+'）';
+      }else{
+        metaText='報酬単価 ¥'+(unit||0).toLocaleString()+'/回';
+      }
     }
     html+=`<div style="padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="openEditClient('${c.id}')">
       <div style="display:flex;justify-content:space-between;align-items:center">
@@ -1303,7 +1316,8 @@ function refreshModalServiceUI(){
   });
   const isRoom=_modalSvc==='aden'||_modalSvc==='sub-svc';
   const isSelfVar=(_modalSvc==='noic'||_modalSvc==='resync')&&_modalSrc==='self';
-  const isHybrid=isRoom||isSelfVar;
+  const isAdNoicResync=(_modalSvc==='noic'||_modalSvc==='resync')&&_modalSrc==='ad';
+  const isHybrid=isRoom||isSelfVar||(isMaster&&isAdNoicResync);
   const hasSource=SERVICES[_modalSvc].hasSource;
   const sourceGroup=document.getElementById('mSourceGroup');
   if(sourceGroup)sourceGroup.classList.toggle('hidden',!hasSource);
@@ -1312,7 +1326,7 @@ function refreshModalServiceUI(){
   if(priceGroup&&priceLabel){
     if(isHybrid){
       priceGroup.classList.remove('hidden');
-      priceLabel.textContent=isSelfVar?'セッション料金（円）／基準¥18,000':'セッション料金（円）';
+      priceLabel.innerHTML=isSelfVar?'セッション料金（円）／基準¥18,000':isAdNoicResync?'セッション料金（円） <span style="font-size:11px;color:var(--text-light)">※25回超え昇格時の報酬計算に使用</span>':'セッション料金（円）';
       const inp=document.getElementById('mPrice')||document.getElementById('ePrice');
       if(inp&&!inp.dataset.userTouched)inp.value=SERVICES[_modalSvc].defaultPrice;
     }else{
@@ -1388,7 +1402,8 @@ function saveNewClient(){
   const src=SERVICES[svc].hasSource?_modalSrc:null;
   const isRoom=svc==='aden'||svc==='sub-svc';
   const isSelfVar=(svc==='noic'||svc==='resync')&&src==='self';
-  const isHybrid=isRoom||isSelfVar;
+  const isAdNoicResync=(svc==='noic'||svc==='resync')&&src==='ad';
+  const hasPriceInput=isRoom||isSelfVar||(isMaster&&isAdNoicResync);
   // カスタムモード（管理者のみ・新規追加時）
   const customCb=document.getElementById('mCustomEnabled');
   const useCustom=isMaster&&customCb&&customCb.checked;
@@ -1398,7 +1413,7 @@ function saveNewClient(){
     customReward=parseInt(document.getElementById('mCustomReward').value)||0;
     price=customSessionPrice;
   }else{
-    price=isHybrid?(parseInt(document.getElementById('mPrice').value)||SERVICES[svc].defaultPrice):SERVICES[svc].defaultPrice;
+    price=hasPriceInput?(parseInt(document.getElementById('mPrice').value)||SERVICES[svc].defaultPrice):SERVICES[svc].defaultPrice;
   }
   const ticket=parseInt(document.getElementById('mTicket').value)||0;
   const courses=[];
@@ -1435,7 +1450,9 @@ function openEditClient(id){
   }
   const editIsRoom=c.service==='aden'||c.service==='sub-svc';
   const editIsSelfVar=(c.service==='noic'||c.service==='resync')&&c.source==='self';
-  const editIsHybrid=editIsRoom||editIsSelfVar;
+  // 広告経由でも、25回超え昇格時の報酬計算用に管理者は料金変更可能
+  const editIsAdNoicResync=(c.service==='noic'||c.service==='resync')&&c.source==='ad';
+  const editIsHybrid=editIsRoom||editIsSelfVar||(isMaster&&editIsAdNoicResync);
   const hasSource=SERVICES[c.service].hasSource;
   const staffPicker=isMaster?`<div class="form-group"><label>担当スタッフ</label><select id="eStaff" onchange="_modalStaffId=this.value">${D.config.staff.map(s=>`<option value="${s.id}" ${s.id===_modalStaffId?'selected':''}>${esc(s.name)}</option>`).join('')}</select></div>`:'';
   const sourceLabels={ad:'広告経由',self:'自己集客',monitor:'モニター'};
@@ -1475,7 +1492,7 @@ function openEditClient(id){
     <div class="form-group ${hasSource?'':'hidden'}" id="mSourceGroup"><label>流入経路${!isMaster?' '+lockNote:''}</label>
       ${sourceField}
     </div>
-    <div class="form-group ${editIsHybrid&&!isCustom?'':'hidden'}" id="mPriceGroup"><label id="mPriceLabel">セッション料金（円）${!isMaster?' '+lockNote:''}</label><input id="ePrice" type="number" data-user-touched="1" value="${c.sessionPrice||SERVICES[c.service].defaultPrice||18000}" ${!isMaster?'disabled':''}></div>
+    <div class="form-group ${editIsHybrid&&!isCustom?'':'hidden'}" id="mPriceGroup"><label id="mPriceLabel">セッション料金（円）${editIsAdNoicResync?' <span style="font-size:11px;color:var(--text-light)">※25回超え昇格時の報酬計算に使用</span>':''}${!isMaster?' '+lockNote:''}</label><input id="ePrice" type="number" data-user-touched="1" value="${c.sessionPrice||SERVICES[c.service].defaultPrice||18000}" ${!isMaster?'disabled':''}></div>
     ${customSection}
     ${coursesHtml}
     <div class="form-group"><label>🎫 チケット追加（回数）</label><input id="eNewTicket" type="number" placeholder="追加する回数を入力" inputmode="numeric" min="0"></div>
@@ -1488,14 +1505,13 @@ function toggleCustomMode(on){
   const fields=document.getElementById('eCustomFields');
   const priceGroup=document.getElementById('mPriceGroup');
   if(fields)fields.classList.toggle('hidden',!on);
-  // カスタムONのときは標準のセッション料金欄を隠す
   if(priceGroup){
     if(on){priceGroup.classList.add('hidden')}
     else{
-      // OFFに戻したら、サービス・流入経路に応じて表示
       const isRoom=_modalSvc==='aden'||_modalSvc==='sub-svc';
       const isSelfVar=(_modalSvc==='noic'||_modalSvc==='resync')&&_modalSrc==='self';
-      priceGroup.classList.toggle('hidden',!(isRoom||isSelfVar));
+      const isAdNoicResync=(_modalSvc==='noic'||_modalSvc==='resync')&&_modalSrc==='ad';
+      priceGroup.classList.toggle('hidden',!(isRoom||isSelfVar||(isMaster&&isAdNoicResync)));
     }
   }
   // ボックスの色味を更新
@@ -1536,11 +1552,11 @@ function saveEditClient(id){
   }
   const isRoom=c.service==='aden'||c.service==='sub-svc';
   const isSelfVar=(c.service==='noic'||c.service==='resync')&&c.source==='self';
-  const isHybrid=isRoom||isSelfVar;
+  const isAdNoicResync=(c.service==='noic'||c.service==='resync')&&c.source==='ad';
+  const hasPriceInput=isRoom||isSelfVar||(isMaster&&isAdNoicResync);
   if(c.customEnabled){
-    // カスタムONの場合は customSessionPrice を sessionPrice にも入れる（売上計算用）
     c.sessionPrice=c.customSessionPrice||0;
-  }else if(isHybrid){
+  }else if(hasPriceInput){
     if(isMaster){
       const inp=document.getElementById('ePrice');
       c.sessionPrice=inp?(parseInt(inp.value)||SERVICES[c.service].defaultPrice):SERVICES[c.service].defaultPrice;
