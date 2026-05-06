@@ -168,7 +168,22 @@ function getAllData(){
   const lockedMonths={};
   lkRows.forEach(r=>{lockedMonths[normalizeMonthKey(r.month)]={lockedAt:Number(r.lockedAt)||0}});
 
-  return{config,clients,sessions,lockedMonths};
+  // Adjustments（報酬調整）
+  const adjSh=getOrCreateSheet('報酬調整',['month','staffKey','enabled','amount','reason']);
+  const adjRows=sheetToArray(adjSh);
+  const adjustments={};
+  adjRows.forEach(r=>{
+    const mk=normalizeMonthKey(r.month);
+    const sk=String(r.staffKey);
+    if(!adjustments[mk])adjustments[mk]={};
+    adjustments[mk][sk]={
+      enabled:r.enabled===true||r.enabled==='true'||r.enabled===1,
+      amount:Number(r.amount)||0,
+      reason:String(r.reason||'')
+    };
+  });
+
+  return{config,clients,sessions,lockedMonths,adjustments};
 }
 
 /* ===== Save All Data ===== */
@@ -225,6 +240,23 @@ function saveAllData(D){
   if(lkData.length>0){
     lkSh.getRange(2,1,lkData.length,1).setNumberFormat('@');
     lkSh.getRange(2,1,lkData.length,2).setValues(lkData);
+  }
+
+  // Adjustments
+  const adjSh=getOrCreateSheet('報酬調整',['month','staffKey','enabled','amount','reason']);
+  if(adjSh.getLastRow()>1)adjSh.getRange(2,1,adjSh.getLastRow()-1,5).clearContent();
+  const adjData=[];
+  if(D.adjustments){
+    Object.keys(D.adjustments).forEach(mk=>{
+      Object.keys(D.adjustments[mk]).forEach(sk=>{
+        const a=D.adjustments[mk][sk];
+        adjData.push([mk,sk,a.enabled?true:false,a.amount||0,a.reason||'']);
+      });
+    });
+  }
+  if(adjData.length>0){
+    adjSh.getRange(2,1,adjData.length,1).setNumberFormat('@');
+    adjSh.getRange(2,1,adjData.length,5).setValues(adjData);
   }
 }
 

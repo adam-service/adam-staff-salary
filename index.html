@@ -338,6 +338,7 @@ let D,isMaster=false,currentStaffId=null,currentMonth,pinBuffer='',loginRole='st
 function migrateData(d){
   if(!d.config)d.config=defaultData().config;
   if(d.config.masterPin!=null)d.config.masterPin=String(d.config.masterPin).padStart(4,'0');
+  if(!d.adjustments)d.adjustments={};
   // 旧 trainerName/trainerPin を staff[0] に移行
   if(!d.config.staff)d.config.staff=[];
   if((d.config.trainerName||d.config.trainerPin)&&d.config.staff.length===0){
@@ -494,6 +495,10 @@ async function syncFromCloud(){
       if((!data.config.staff||data.config.staff.length===0)&&D.config.staff&&D.config.staff.length>0){
         data.config.staff=D.config.staff;
       }
+      // 報酬調整データもクラウドが空ならローカル保持
+      if((!data.adjustments||Object.keys(data.adjustments).length===0)&&D.adjustments&&Object.keys(D.adjustments).length>0){
+        data.adjustments=D.adjustments;
+      }
       D=data;saveLocal();render();alert('最新データを取得しました');
     }else if(localHasClients){
       alert('クラウドにゲストデータがありません。ローカルデータを維持し、クラウドへ保存します。');
@@ -501,6 +506,10 @@ async function syncFromCloud(){
     }else{
       if((!data.config.staff||data.config.staff.length===0)&&D.config.staff&&D.config.staff.length>0){
         data.config.staff=D.config.staff;
+      }
+      // 報酬調整データもクラウドが空ならローカル保持
+      if((!data.adjustments||Object.keys(data.adjustments).length===0)&&D.adjustments&&Object.keys(D.adjustments).length>0){
+        data.adjustments=D.adjustments;
       }
       D=data;saveLocal();render();alert('最新データを取得しました');
     }
@@ -640,6 +649,9 @@ async function logout(){
       if(cloudHasClients){
         if((!data.config.staff||data.config.staff.length===0)&&D.config.staff&&D.config.staff.length>0){
           data.config.staff=D.config.staff;
+        }
+        if((!data.adjustments||Object.keys(data.adjustments).length===0)&&D.adjustments&&Object.keys(D.adjustments).length>0){
+          data.adjustments=D.adjustments;
         }
         D=data;saveLocal();renderStaffSelector();
       }
@@ -966,8 +978,72 @@ function renderReport(){
     <div class="info-row"><span class="label">resync 報酬</span><span class="val" style="color:var(--green)">¥${calc.byService.resync.reward.toLocaleString()}</span></div>
     <div class="info-row" style="padding:10px 0;border-top:1px dashed var(--border);margin-top:6px"><span class="label" style="font-weight:700">セッション売上 合計</span><span class="val" style="font-size:16px;color:#b7791f">¥${calc.totalRevenue.toLocaleString()}</span></div>
     <div class="info-row" style="padding:12px 0;font-size:16px"><span class="label" style="font-size:14px;font-weight:700">合計報酬額</span><span class="val" style="font-size:22px;color:var(--accent)">¥${calc.totalReward.toLocaleString()}</span></div>
+  </div>`;
+  // 報酬額の調整セクション
+  const adjStaffKey=isMaster?'__admin':(currentStaffId||'__none');
+  const adj=getAdjustment(mk,adjStaffKey);
+  const adjAmount=adj.enabled?(Number(adj.amount)||0):0;
+  const finalTotal=calc.totalReward+adjAmount;
+  html+=`<div style="margin-top:16px;padding:14px;border:2px dashed var(--border);border-radius:10px;background:${adj.enabled?'#fef9e7':'#fafafa'}">
+    <div style="font-weight:700;margin-bottom:8px">⚙️ 報酬額の調整（イレギュラー対応）</div>
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:6px 0">
+      <input type="checkbox" id="adjEnabled" ${adj.enabled?'checked':''} onchange="toggleAdjustment('${mk}','${adjStaffKey}',this.checked)" style="width:18px;height:18px;cursor:pointer">
+      <span style="font-weight:600">報酬調整を適用する</span>
+    </label>
+    <div id="adjFields" class="${adj.enabled?'':'hidden'}" style="margin-top:10px">
+      <div style="font-size:11px;color:var(--text-light);margin-bottom:8px">プラスは加算、マイナスは減額。例: -5000 / +10000</div>
+      <div style="display:grid;grid-template-columns:1fr 2fr;gap:10px;margin-bottom:10px">
+        <div>
+          <label style="font-size:12px;display:block;margin-bottom:4px">調整額（円）</label>
+          <input type="number" id="adjAmount" value="${adj.amount||0}" placeholder="例: -5000" style="width:100%">
+        </div>
+        <div>
+          <label style="font-size:12px;display:block;margin-bottom:4px">理由</label>
+          <input type="text" id="adjReason" value="${esc(adj.reason||'')}" placeholder="例: 諸事情により減額" style="width:100%">
+        </div>
+      </div>
+      <button class="btn btn-primary" onclick="saveAdjustment('${mk}','${adjStaffKey}')">調整を保存</button>
+    </div>
+    ${adj.enabled?`
+    <div style="margin-top:14px;padding:10px;background:#fff;border-radius:8px;border:1px solid var(--border)">
+      <div style="font-size:13px;display:flex;justify-content:space-between"><span>調整前</span><span>¥${calc.totalReward.toLocaleString()}</span></div>
+      <div style="font-size:13px;display:flex;justify-content:space-between"><span>調整額</span><span style="color:${adjAmount>=0?'var(--green)':'#c0392b'}">${adjAmount>=0?'+':''}¥${adjAmount.toLocaleString()}</span></div>
+      ${adj.reason?`<div style="font-size:11px;color:var(--text-light);margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)">理由: ${esc(adj.reason)}</div>`:''}
+      <div style="font-size:18px;font-weight:700;color:var(--accent);margin-top:10px;padding-top:10px;border-top:2px solid var(--border);display:flex;justify-content:space-between"><span style="font-size:14px">調整後支給額</span><span>¥${finalTotal.toLocaleString()}</span></div>
+    </div>`:''}
   </div></div>`;
   el.innerHTML=html;
+}
+
+/* ===== 報酬調整 ===== */
+function getAdjustment(mk,staffKey){
+  if(!D.adjustments)D.adjustments={};
+  if(!D.adjustments[mk])D.adjustments[mk]={};
+  if(!D.adjustments[mk][staffKey])D.adjustments[mk][staffKey]={enabled:false,amount:0,reason:''};
+  return D.adjustments[mk][staffKey];
+}
+function toggleAdjustment(mk,staffKey,enabled){
+  // 入力中の値を保持してから切り替え
+  const adj=getAdjustment(mk,staffKey);
+  const inpA=document.getElementById('adjAmount');
+  const inpR=document.getElementById('adjReason');
+  if(inpA)adj.amount=parseInt(inpA.value)||0;
+  if(inpR)adj.reason=inpR.value||'';
+  adj.enabled=!!enabled;
+  save();render();
+}
+function saveAdjustment(mk,staffKey){
+  const adj=getAdjustment(mk,staffKey);
+  adj.amount=parseInt(document.getElementById('adjAmount').value)||0;
+  adj.reason=document.getElementById('adjReason').value||'';
+  adj.enabled=true;
+  save();render();
+  // 軽い通知
+  const t=document.createElement('div');
+  t.textContent='✅ 調整を保存しました';
+  t.style.cssText='position:fixed;top:20px;left:50%;transform:translateX(-50%);background:var(--green);color:#fff;padding:10px 20px;border-radius:8px;z-index:300;box-shadow:0 4px 12px rgba(0,0,0,.2)';
+  document.body.appendChild(t);
+  setTimeout(()=>t.remove(),1800);
 }
 
 function renderClients(){
@@ -1652,6 +1728,18 @@ renderStaffSelector();
         if((!data.config.staff||data.config.staff.length===0)&&D.config.staff&&D.config.staff.length>0){
           data.config.staff=D.config.staff;
         }
+        // 報酬調整データもクラウドが空ならローカル保持
+        if(!data.adjustments||Object.keys(data.adjustments).length===0){
+          if(D.adjustments&&Object.keys(D.adjustments).length>0)data.adjustments=D.adjustments;
+        }else if(D.adjustments){
+          // 両方ある場合はマージ（ローカルにあってクラウドに無いものを追加）
+          Object.keys(D.adjustments).forEach(mk=>{
+            if(!data.adjustments[mk])data.adjustments[mk]={};
+            Object.keys(D.adjustments[mk]).forEach(sk=>{
+              if(!data.adjustments[mk][sk])data.adjustments[mk][sk]=D.adjustments[mk][sk];
+            });
+          });
+        }
         // ローカルにあってクラウドに無いゲスト・セッションをマージ（未送信の変更を保護）
         const cloudClientIds=new Set(data.clients.map(c=>c.id));
         (D.clients||[]).forEach(c=>{if(!cloudClientIds.has(c.id))data.clients.push(c)});
@@ -1702,9 +1790,19 @@ async function autoSyncTick(){
     const data=await fetchFromCloud();
     if(!data)return;
     migrateData(data);
-    // ローカル優先：ローカルに有るがクラウドに無いスタッフ／ゲスト／チケットを保護
+    // ローカル優先：ローカルに有るがクラウドに無いスタッフ／ゲスト／チケット／調整を保護
     if((!data.config.staff||data.config.staff.length===0)&&D.config.staff&&D.config.staff.length>0){
       data.config.staff=D.config.staff;
+    }
+    // 報酬調整データのマージ（ローカル優先）
+    if(!data.adjustments)data.adjustments={};
+    if(D.adjustments){
+      Object.keys(D.adjustments).forEach(mk=>{
+        if(!data.adjustments[mk])data.adjustments[mk]={};
+        Object.keys(D.adjustments[mk]).forEach(sk=>{
+          if(!data.adjustments[mk][sk])data.adjustments[mk][sk]=D.adjustments[mk][sk];
+        });
+      });
     }
     // ローカルにあってクラウドに無いゲストはマージ（ローカル優先）
     const cloudClientIds=new Set((data.clients||[]).map(c=>c.id));
