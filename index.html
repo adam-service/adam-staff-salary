@@ -308,9 +308,16 @@ const SAVE_DELAY=1500;
 const SERVICES={
   aden:{label:'ADEN',color:'aden',icon:'A',hasRoom:true,defaultPrice:18000,defaultRoom:8000},
   'sub-svc':{label:'SUB',color:'sub-svc',icon:'S',hasRoom:true,defaultPrice:13000,defaultRoom:5000},
-  noic:{label:'NOIC',color:'noic',icon:'N',hasSource:true,defaultPrice:18000,defaultRewards:{ad:6000,self:10000,monitor:2500}},
-  resync:{label:'resync',color:'resync',icon:'R',hasSource:true,defaultPrice:18000,defaultRewards:{ad:6000,self:10000,monitor:2500}}
+  noic:{label:'NOIC',color:'noic',icon:'N',hasSource:true,hasPlan:true,defaultPrice:18000,defaultRewards:{ad:6000,self:10000,monitor:2500}},
+  resync:{label:'resync',color:'resync',icon:'R',hasSource:true,hasPlan:true,defaultPrice:18000,defaultRewards:{ad:6000,self:10000,monitor:2500}}
 };
+/* Plan定義（NOIC/resyncのみ。Basicが既存・Liteが新規） */
+const PLANS={
+  basic:{label:'Basic',sessionTime:'50分',defaultPrice:18000,discountPrice:15000,rewards:{ad:6000,self:10000,monitor:2500,ltvAd:8000,ltvSelf:8000}},
+  lite:{label:'Lite',sessionTime:'25分',defaultPrice:12000,discountPrice:12000,rewards:{ad:4500,self:6000,monitor:2500,ltvAd:6000,ltvSelf:6000}}
+};
+/* LTV閾値（432,000円超で広告→自己集客扱いに昇格） */
+const LTV_THRESHOLD_DEFAULT=432000;
 function svcLabel(s){return SERVICES[s]?SERVICES[s].label:s}
 function svcClass(s){return SERVICES[s]?SERVICES[s].color:''}
 function sourceLabel(src){return src==='ad'?'広告経由':src==='self'?'自己集客':src==='monitor'?'モニター':''}
@@ -321,16 +328,19 @@ function defaultData(){
     config:{
       masterPin:'0000',
       staff:[],
+      ltvThreshold:LTV_THRESHOLD_DEFAULT,
       prices:{
         aden:{room:8000},
         'sub-svc':{room:5000},
-        noic:{ad:6000,self:10000,monitor:2500},
-        resync:{ad:6000,self:10000,monitor:2500}
+        noic:{ad:6000,self:10000,monitor:2500,lite:{ad:4500,self:6000,monitor:2500}},
+        resync:{ad:6000,self:10000,monitor:2500,lite:{ad:4500,self:6000,monitor:2500}}
       }
     },
     clients:[],
     sessions:{},
-    lockedMonths:{}
+    lockedMonths:{},
+    /* lockedSnapshots: 確定月の計算結果スナップショット。ロック時点の金額を不変に保つ */
+    lockedSnapshots:{}
   };
 }
 let D,isMaster=false,currentStaffId=null,currentMonth,pinBuffer='',loginRole='staff',loginStaffId=null,clientFilter='all';
@@ -364,7 +374,13 @@ function migrateData(d){
   else if(d.config.prices.noic.monitor==null)d.config.prices.noic.monitor=2500;
   if(!d.config.prices.resync)d.config.prices.resync={ad:6000,self:10000,monitor:2500};
   else if(d.config.prices.resync.monitor==null)d.config.prices.resync.monitor=2500;
+  // Lite料金（NOIC/resync）の初期化
+  if(!d.config.prices.noic.lite)d.config.prices.noic.lite={ad:4500,self:6000,monitor:2500};
+  if(!d.config.prices.resync.lite)d.config.prices.resync.lite={ad:4500,self:6000,monitor:2500};
+  // LTV閾値の初期化
+  if(d.config.ltvThreshold==null)d.config.ltvThreshold=LTV_THRESHOLD_DEFAULT;
   if(!d.lockedMonths)d.lockedMonths={};
+  if(!d.lockedSnapshots)d.lockedSnapshots={};
   if(!d.clients)d.clients=[];
   if(!d.sessions)d.sessions={};
   function fixMonthKeys(obj){
@@ -388,7 +404,79 @@ function migrateData(d){
   d.clients.forEach(c=>{
     if(!c.courses)c.courses=[];
     if(!c.staffId&&defaultStaffId)c.staffId=defaultStaffId;
+    // 新規: clientにplanフィールドを追加（既存はbasicに初期化）
+    if(!c.plan)c.plan='basic';
+    // 新規: coursesに unitPrice / plan を追加（既存はclient.sessionPriceまたはサービスdefault）
+    c.courses.forEach(cr=>{
+      if(cr.unitPrice==null){
+        // 既存コースの単価: client.sessionPrice優先、なければサービスdefault
+        cr.unitPrice=c.sessionPrice||SERVICES[c.service]?.defaultPrice||18000;
+      }
+      if(!cr.plan)cr.plan=c.plan||'basic';
+    });
   });
+  // 確定済み月のスナップショット生成（旧ロジック=セッション数25回閾値で計算した値を保存）
+  // これにより 4月など既存の確定済み月の金額が新ロジックで変わるのを防ぐ
+  Object.keys(d.lockedMonths||{}).forEach(mk=>{
+    if(!d.lockedSnapshots[mk]||Object.keys(d.lockedSnapshots[mk]).length===0){
+      d.lockedSnapshots[mk]={};
+      (d.clients||[]).forEach(c=>{
+        const calc=_calcLegacyForSnapshot(c,mk,d);
+        if(calc.count>0)d.lockedSnapshots[mk][c.id]=calc;
+      });
+    }
+  });
+}
+/* 旧ロジック（セッション数25回閾値）で計算するpure function。
+   既存の確定済み月のスナップショット生成専用。新規計算には使わない。 */
+function _calcLegacyForSnapshot(c,mk,d){
+  const s=d.sessions[mk]?.[c.id];
+  const count=s?s.count:0;
+  if(count===0)return{count:0,reward:0,unitReward:0,sessionPrice:0,revenue:0,isCustom:!!c.customEnabled,promoted:false,legacy:true};
+  let sessionPrice=(s&&s.sessionPriceOverride!=null)?s.sessionPriceOverride:(c.sessionPrice||0);
+  let unitReward=0,roomFee=0;
+  if(c.customEnabled){
+    if(s&&s.sessionPriceOverride==null)sessionPrice=c.customSessionPrice||0;
+    unitReward=(s&&s.rewardOverride!=null)?s.rewardOverride:(c.customReward||0);
+    roomFee=Math.max(0,sessionPrice-unitReward);
+  }else if(c.service==='aden'){
+    roomFee=d.config.prices.aden.room||0;
+    unitReward=Math.max(0,sessionPrice-roomFee);
+  }else if(c.service==='sub-svc'){
+    roomFee=d.config.prices['sub-svc'].room||0;
+    unitReward=Math.max(0,sessionPrice-roomFee);
+  }else if(c.service==='noic'||c.service==='resync'){
+    const p=d.config.prices[c.service];
+    if(c.source==='ad')unitReward=p.ad||0;
+    else if(c.source==='monitor')unitReward=p.monitor||0;
+    else{
+      const basePrice=18000,baseReward=p.self||0,deduction=basePrice-baseReward;
+      roomFee=deduction;unitReward=Math.max(0,sessionPrice-deduction);
+    }
+  }
+  let reward=0,adSessions=count,promotedSessions=0,promotedRate=0;
+  if((c.service==='noic'||c.service==='resync')&&c.source==='ad'&&!c.customEnabled){
+    const p=d.config.prices[c.service];
+    const adRate=p.ad||6000,basePrice=18000,baseReward=p.self||10000,deduction=basePrice-baseReward;
+    promotedRate=Math.max(0,sessionPrice-deduction);
+    let consumedTotal=0;
+    Object.keys(d.sessions||{}).forEach(key=>{const ss=d.sessions[key][c.id];if(ss)consumedTotal+=Number(ss.count)||0;});
+    const consumedBefore=consumedTotal-count;
+    const remainingAdQuota=Math.max(0,25-Math.max(0,consumedBefore));
+    adSessions=Math.min(count,remainingAdQuota);
+    promotedSessions=count-adSessions;
+    reward=adSessions*adRate+promotedSessions*promotedRate;
+  }else{
+    reward=unitReward*count;
+  }
+  const revenue=c.source==='monitor'?0:sessionPrice*count;
+  const promoted=promotedSessions>0;
+  let displayUnitReward=unitReward;
+  if(promoted){
+    if(adSessions===0)displayUnitReward=promotedRate;
+    else displayUnitReward=Math.round(reward/count);
+  }
+  return{count,reward,unitReward:displayUnitReward,baseUnitReward:unitReward,sessionPrice,roomFee,revenue,service:c.service,source:c.source,isCustom:!!c.customEnabled,promoted,adSessions,promotedSessions,promotedRate,legacy:true};
 }
 function visibleClients(){
   if(isMaster)return D.clients;
@@ -696,76 +784,200 @@ function getTicketInfo(clientId){
 }
 
 /* ===== Calculation ===== */
+/* 累計セッション数（指定月を含むかどうか） */
+function getCumSessionsBefore(clientId,mk){
+  let total=0;
+  Object.keys(D.sessions||{}).sort().forEach(k=>{
+    if(k>=mk)return;
+    const ss=D.sessions[k]?.[clientId];
+    if(ss)total+=Number(ss.count)||0;
+  });
+  return total;
+}
+/* sessionIndex(1-based)に対応するコースを返す */
+function getCourseForSession(c,sessionIndex){
+  let acc=0;
+  for(const cr of (c.courses||[])){
+    if(sessionIndex<=acc+cr.total)return cr;
+    acc+=cr.total;
+  }
+  // チケット残数を超えた場合は最後のコースの単価を使用
+  return (c.courses||[]).slice(-1)[0]||null;
+}
+function getUnitPriceForSession(c,sessionIndex){
+  const cr=getCourseForSession(c,sessionIndex);
+  if(cr&&cr.unitPrice!=null)return cr.unitPrice;
+  return c.sessionPrice||SERVICES[c.service]?.defaultPrice||18000;
+}
+function getPlanForSession(c,sessionIndex){
+  const cr=getCourseForSession(c,sessionIndex);
+  return (cr&&cr.plan)||c.plan||'basic';
+}
+/* 累計売上(LTV)を計算 — 過去全月の各セッションの unitPrice の合計 */
+function getCumLTVBefore(clientId,mk){
+  const c=D.clients.find(x=>x.id===clientId);
+  if(!c)return 0;
+  const cumSessions=getCumSessionsBefore(clientId,mk);
+  let ltv=0;
+  for(let i=1;i<=cumSessions;i++){
+    ltv+=getUnitPriceForSession(c,i);
+  }
+  return ltv;
+}
+/* プラン別の標準報酬を取得（D.config.pricesと連動）
+   unitPrice: そのセッションの単価。満額未満（値引き）なら自力扱いレートを適用 */
+function getStandardReward(c,plan,source,promoted,unitPrice){
+  const svc=c.service; // 'noic' or 'resync'
+  const cfg=D.config.prices[svc]||{};
+  if(plan==='lite'){
+    const liteCfg=cfg.lite||{ad:4500,self:6000,monitor:2500};
+    if(source==='monitor')return liteCfg.monitor||2500;
+    // Lite は値引き概念なし。LTV超えのみ昇格（6,000円）
+    if(promoted){
+      return PLANS.lite.rewards.ltvAd||6000;
+    }
+    return source==='ad'?(liteCfg.ad||4500):(liteCfg.self||6000);
+  }
+  // basic
+  if(source==='monitor')return cfg.monitor||2500;
+  const fullPrice=PLANS.basic.defaultPrice||18000; // 満額 18,000円
+  // 広告経由: LTV突破まで一律6,000円（単価に関係なし）。突破後は8,000円
+  if(source==='ad'){
+    return promoted?(PLANS.basic.rewards.ltvAd||8000):(cfg.ad||6000);
+  }
+  // 自己集客: 満額(18,000)なら10,000円。値引き(15,000等)またはLTV突破なら8,000円
+  const isDiscounted=unitPrice!=null&&unitPrice<fullPrice;
+  if(promoted||isDiscounted){
+    return PLANS.basic.rewards.ltvAd||8000;
+  }
+  return cfg.self||10000;
+}
+
 function calcClientMonth(clientId,mk){
   const c=D.clients.find(x=>x.id===clientId);
-  if(!c)return{count:0,reward:0,unitReward:0,sessionPrice:0,revenue:0,isCustom:false};
+  if(!c)return{count:0,reward:0,unitReward:0,sessionPrice:0,roomFee:0,revenue:0,service:null,source:null,isCustom:false,promoted:false,consumedTotal:0,adSessions:0,promotedSessions:0,promotedRate:0,ltvAtStart:0,ltvAfter:0};
+  // 確定済み月のスナップショット優先（4月など過去の確定値を保護）
+  if(D.lockedMonths&&D.lockedMonths[mk]&&D.lockedSnapshots&&D.lockedSnapshots[mk]&&D.lockedSnapshots[mk][clientId]){
+    return D.lockedSnapshots[mk][clientId];
+  }
   const s=getSessionData(clientId,mk);
   const count=s?s.count:0;
-  let sessionPrice=(s&&s.sessionPriceOverride!=null)?s.sessionPriceOverride:(c.sessionPrice||0);
-  let unitReward=0,roomFee=0;
-  // カスタムモード（管理者が個別設定）
+
+  // セッション単価override（月レベル）が有効ならそれを優先（既存運用との互換性）
+  const overridePrice=(s&&s.sessionPriceOverride!=null)?s.sessionPriceOverride:null;
+
+  // ===== ADEN / SUB（ルーム差し引き型・コース単価ベース／LTV昇格なし） =====
+  if(c.service==='aden'||c.service==='sub-svc'){
+    // カスタムモードは従来通り（個別単価・報酬を直接指定）
+    if(c.customEnabled){
+      let sessionPrice=overridePrice!=null?overridePrice:(c.customSessionPrice||0);
+      const unitReward=(s&&s.rewardOverride!=null)?s.rewardOverride:(c.customReward||0);
+      const reward=unitReward*count;
+      const revenue=sessionPrice*count;
+      return{count,reward,unitReward,baseUnitReward:unitReward,sessionPrice,roomFee:Math.max(0,sessionPrice-unitReward),revenue,service:c.service,source:c.source,isCustom:true,promoted:false,consumedTotal:getConsumedTotal(c.id),adSessions:0,promotedSessions:0,promotedRate:0,ltvAtStart:0,ltvAfter:0};
+    }
+    // 通常: コース単価ベースで計算（コースごとに単価が変わる＝値引きコースに自然対応）
+    const roomFeeCfg=D.config.prices[c.service].room||0;
+    const cumSessionsBefore=getCumSessionsBefore(clientId,mk);
+    let totalReward=0,totalRevenue=0;
+    const priceTallies={};
+    let firstSessionPrice=0;
+    for(let i=0;i<count;i++){
+      const sessionIndex=cumSessionsBefore+i+1;
+      const unitPrice=overridePrice!=null?overridePrice:getUnitPriceForSession(c,sessionIndex);
+      const reward=Math.max(0,unitPrice-roomFeeCfg);
+      totalReward+=reward;
+      totalRevenue+=unitPrice;
+      if(i===0)firstSessionPrice=unitPrice;
+      priceTallies[unitPrice]=(priceTallies[unitPrice]||0)+1;
+    }
+    // 表示用（count=0なら次セッションの想定単価）
+    let sessionPrice,displayUnitReward;
+    if(count>0){
+      const distinctPrices=Object.keys(priceTallies);
+      sessionPrice=distinctPrices.length===1?Number(distinctPrices[0]):firstSessionPrice;
+      displayUnitReward=Math.round(totalReward/count);
+    }else{
+      const nextIndex=cumSessionsBefore+1;
+      sessionPrice=getUnitPriceForSession(c,nextIndex)||c.sessionPrice||SERVICES[c.service].defaultPrice;
+      displayUnitReward=Math.max(0,sessionPrice-roomFeeCfg);
+    }
+    return{count,reward:totalReward,unitReward:displayUnitReward,baseUnitReward:displayUnitReward,sessionPrice,roomFee:roomFeeCfg,revenue:totalRevenue,service:c.service,source:c.source,isCustom:false,promoted:false,consumedTotal:cumSessionsBefore+count,adSessions:0,promotedSessions:0,promotedRate:0,priceTallies,ltvAtStart:0,ltvAfter:0};
+  }
+
+  // ===== カスタムモード =====
   if(c.customEnabled){
-    if(s&&s.sessionPriceOverride==null)sessionPrice=c.customSessionPrice||0;
-    unitReward=(s&&s.rewardOverride!=null)?s.rewardOverride:(c.customReward||0);
-    roomFee=Math.max(0,sessionPrice-unitReward);
-  }else if(c.service==='aden'){
-    roomFee=D.config.prices.aden.room||0;
-    unitReward=Math.max(0,sessionPrice-roomFee);
-  }else if(c.service==='sub-svc'){
-    roomFee=D.config.prices['sub-svc'].room||0;
-    unitReward=Math.max(0,sessionPrice-roomFee);
-  }else if(c.service==='noic'||c.service==='resync'){
-    const p=D.config.prices[c.service];
-    if(c.source==='ad'){
-      unitReward=p.ad||0;
-    }else if(c.source==='monitor'){
-      unitReward=p.monitor||0;
-    }else{
-      const basePrice=SERVICES[c.service].defaultPrice||18000;
-      const baseReward=p.self||0;
-      const deduction=basePrice-baseReward;
-      roomFee=deduction;
-      unitReward=Math.max(0,sessionPrice-deduction);
-    }
+    let sessionPrice=overridePrice!=null?overridePrice:(c.customSessionPrice||0);
+    const unitReward=(s&&s.rewardOverride!=null)?s.rewardOverride:(c.customReward||0);
+    const reward=unitReward*count;
+    const revenue=c.source==='monitor'?0:sessionPrice*count;
+    return{count,reward,unitReward,baseUnitReward:unitReward,sessionPrice,roomFee:Math.max(0,sessionPrice-unitReward),revenue,service:c.service,source:c.source,isCustom:true,promoted:false,consumedTotal:getConsumedTotal(c.id),adSessions:0,promotedSessions:0,promotedRate:0,ltvAtStart:0,ltvAfter:0};
   }
-  // 報酬計算：広告経由は「26回目以降」のみ自己集客レートに昇格
-  // 昇格レート = セッション料金 − ¥8,000（自己集客と同じ計算式）
-  // 例: 通常¥18,000 → 報酬¥10,000 / ¥15,000 → 報酬¥7,000
-  let reward=0;
-  let adSessions=count,promotedSessions=0;
-  let promotedRate=0;
+
+  // ===== NOIC / resync — LTV 432,000円ベースの新ロジック =====
+  const ltvThreshold=D.config.ltvThreshold||LTV_THRESHOLD_DEFAULT;
+  const cumSessionsBefore=getCumSessionsBefore(clientId,mk);
+  const ltvBefore=getCumLTVBefore(clientId,mk);
+  let cumLTV=ltvBefore;
+  let totalReward=0,totalRevenue=0;
+  let adSessions=0,promotedSessions=0;
+  const priceTallies={}; // 単価別の集計（混在時の表示用）
+  let firstSessionPrice=0;
+
+  for(let i=0;i<count;i++){
+    const sessionIndex=cumSessionsBefore+i+1;
+    let unitPrice=overridePrice!=null?overridePrice:getUnitPriceForSession(c,sessionIndex);
+    const plan=getPlanForSession(c,sessionIndex);
+    const ltvAtStart=cumLTV; // このセッション開始前のLTV
+    const isPromoted=ltvAtStart>=ltvThreshold;
+    const reward=getStandardReward(c,plan,c.source||'ad',isPromoted,unitPrice);
+    totalReward+=reward;
+    if(c.source!=='monitor')totalRevenue+=unitPrice;
+    if(isPromoted)promotedSessions++;
+    else adSessions++;
+    cumLTV+=unitPrice;
+    if(i===0)firstSessionPrice=unitPrice;
+    priceTallies[unitPrice]=(priceTallies[unitPrice]||0)+1;
+  }
+
+  // count=0 の場合は、次のセッションの想定単価・想定報酬を表示用に算出
+  let sessionPrice,displayUnitReward;
   if(count>0){
-    if((c.service==='noic'||c.service==='resync')&&c.source==='ad'&&!c.customEnabled){
-      const p=D.config.prices[c.service];
-      const adRate=p.ad||6000;
-      const basePrice=SERVICES[c.service].defaultPrice||18000;
-      const baseReward=p.self||10000;
-      const deduction=basePrice-baseReward; // 通常 8000
-      promotedRate=Math.max(0,sessionPrice-deduction);
-      const consumedBefore=getConsumedTotal(c.id)-count;
-      const remainingAdQuota=Math.max(0,25-Math.max(0,consumedBefore));
-      adSessions=Math.min(count,remainingAdQuota);
-      promotedSessions=count-adSessions;
-      reward=adSessions*adRate+promotedSessions*promotedRate;
-    }else{
-      reward=unitReward*count;
-    }
+    const distinctPrices=Object.keys(priceTallies);
+    sessionPrice=distinctPrices.length===1?Number(distinctPrices[0]):firstSessionPrice;
+    displayUnitReward=Math.round(totalReward/count);
+  }else{
+    // 想定: 次のセッションは累計+1回目
+    const nextIndex=cumSessionsBefore+1;
+    sessionPrice=getUnitPriceForSession(c,nextIndex)||c.sessionPrice||SERVICES[c.service]?.defaultPrice||18000;
+    const nextPlan=getPlanForSession(c,nextIndex);
+    const isPromotedNext=ltvBefore>=ltvThreshold;
+    displayUnitReward=getStandardReward(c,nextPlan,c.source||'ad',isPromotedNext,sessionPrice);
   }
-  // モニターは無料対応のため売上は常に0円
-  const revenue=count===0?0:(c.source==='monitor'?0:sessionPrice*count);
-  // 昇格判定（広告→自己レート）：26回目以降が含まれているか
-  const promoted=promotedSessions>0;
-  const consumedTotalAll=getConsumedTotal(c.id);
-  // 表示用 unitReward：今月の実際のレートを反映
-  let displayUnitReward=unitReward;
-  if(promoted){
-    if(adSessions===0){
-      displayUnitReward=promotedRate; // 全て昇格レート（セッション料金から計算）
-    }else{
-      displayUnitReward=Math.round(reward/count); // 混在時は平均
-    }
-  }
-  return{count,reward,unitReward:displayUnitReward,baseUnitReward:unitReward,sessionPrice,roomFee,revenue,service:c.service,source:c.source,isCustom:!!c.customEnabled,promoted,consumedTotal:consumedTotalAll,adSessions,promotedSessions,promotedRate};
+  // 表示用promotedRate
+  const lastPlan=getPlanForSession(c,Math.max(1,cumSessionsBefore+count));
+  const promotedRate=PLANS[lastPlan]?.rewards.ltvAd||8000;
+
+  return{
+    count,
+    reward:totalReward,
+    unitReward:displayUnitReward,
+    baseUnitReward:displayUnitReward,
+    sessionPrice,
+    roomFee:0,
+    revenue:totalRevenue,
+    service:c.service,
+    source:c.source,
+    isCustom:false,
+    promoted:promotedSessions>0,
+    consumedTotal:cumSessionsBefore+count,
+    adSessions,
+    promotedSessions,
+    promotedRate,
+    priceTallies,
+    ltvAtStart:ltvBefore,
+    ltvAfter:cumLTV
+  };
 }
 function getConsumedTotal(clientId){
   let total=0;
@@ -870,18 +1082,20 @@ function renderInput(){
       const fillClass=hasTickets?(tk.remaining===0?'empty':tk.remaining<=2?'warn':''):'';
       const svcCls=svcClass(c.service);
       const isRoomDeduction=c.service==='aden'||c.service==='sub-svc';
-      const isSelfVariable=(c.service==='noic'||c.service==='resync')&&c.source==='self';
+      const isNoicResync=c.service==='noic'||c.service==='resync';
+      const isSelfVariable=isNoicResync&&c.source==='self';
       const isHybridReward=isRoomDeduction||isSelfVariable;
       const sourceBadge=c.source?'<span class="badge source-'+c.source+'">'+sourceLabel(c.source)+'</span>':'';
+      const planBadge=isNoicResync&&c.plan==='lite'?'<span class="badge" style="background:#E8913A">Lite</span>':(isNoicResync?'<span class="badge" style="background:#16a085">Basic</span>':'');
       const overridden=s.sessionPriceOverride!=null&&s.sessionPriceOverride!==c.sessionPrice;
       const staff=findStaff(c.staffId);
       const staffBadge=isMaster&&staff?'<span class="badge" style="background:#34495e">'+esc(staff.name)+'</span>':'';
       const customBadge=c.customEnabled?'<span class="badge" style="background:#16a085">⚙️カスタム</span>':'';
-      const promotedBadge=r.promoted?'<span class="badge" style="background:#d4ac0d" title="実施済み25回超のため自己集客レートに昇格">⭐昇格</span>':'';
+      const promotedBadge=r.promoted?'<span class="badge" style="background:#d4ac0d" title="LTV432,000円超により自己集客扱いに昇格">⭐自力扱い</span>':'';
       return`
       <div class="client-card ${svcCls}">
         <div class="client-header">
-          <div><span class="client-name">${esc(c.name)}</span> <span class="badge ${svcCls}">${svcLabel(c.service)}</span>${sourceBadge}${promotedBadge}${customBadge}${staffBadge}</div>
+          <div><span class="client-name">${esc(c.name)}</span> <span class="badge ${svcCls}">${svcLabel(c.service)}</span>${planBadge}${sourceBadge}${promotedBadge}${customBadge}${staffBadge}</div>
           <div style="font-size:11px;color:var(--text-light);cursor:pointer" onclick="openEditClient('${c.id}')">編集</div>
         </div>
         ${hasTickets?`
@@ -900,7 +1114,19 @@ function renderInput(){
         ${orphanCount?`<div style="background:#ffe4e1;border:1px solid #c0392b;border-radius:6px;padding:8px;margin-top:6px;font-size:12px;color:#c0392b">⚠️ コース未登録なのに ${s.count}回 のセッションが記録されています。コースを登録するか、${isMaster?'<button onclick="resetSessionCount(\''+c.id+'\')" style="margin-left:6px;padding:2px 8px;background:#c0392b;color:#fff;border:none;border-radius:4px;cursor:pointer">回数を0にリセット</button>':'管理者にリセットを依頼してください。'}</div>`:''}
         `}
         <div class="client-meta">
-          ${c.customEnabled?`カスタム: 単価 ¥${r.sessionPrice.toLocaleString()} ／ 報酬 ¥${r.unitReward.toLocaleString()}/回`:isRoomDeduction?`セッション料: ¥${r.sessionPrice.toLocaleString()} − ルーム料 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回`:isSelfVariable?`セッション料: ¥${r.sessionPrice.toLocaleString()} − 控除 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回（自己集客）`:r.promoted?`累計${r.consumedTotal}回（25回目まで¥6,000・26回目以降は¥${r.sessionPrice.toLocaleString()}−¥8,000=¥${r.promotedRate.toLocaleString()}） — 今月: 通常${r.adSessions}回＋昇格${r.promotedSessions}回`:`報酬単価: ¥${r.unitReward.toLocaleString()}/回（${sourceLabel(c.source)}）`}
+          ${c.customEnabled?`カスタム: 単価 ¥${r.sessionPrice.toLocaleString()} ／ 報酬 ¥${r.unitReward.toLocaleString()}/回`
+            :isRoomDeduction?(r.priceTallies&&Object.keys(r.priceTallies).length>1
+              ? `単価混在 ／ ルーム料 ¥${r.roomFee.toLocaleString()} = 平均報酬 ¥${r.unitReward.toLocaleString()}/回<br>`+Object.entries(r.priceTallies).map(([p,n])=>`¥${Number(p).toLocaleString()}×${n}回（報酬¥${Math.max(0,Number(p)-r.roomFee).toLocaleString()}）`).join(' ／ ')
+              : `セッション料: ¥${r.sessionPrice.toLocaleString()} − ルーム料 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回`)
+            :isNoicResync?(()=>{
+              const ltvBefore=r.ltvAtStart||0;
+              const ltvAfter=r.ltvAfter||ltvBefore;
+              const threshold=D.config.ltvThreshold||432000;
+              const ltvBadge=ltvBefore>=threshold?`<span style="color:#d4ac0d;font-weight:600">⭐ 自力扱い昇格済（LTV ¥${ltvBefore.toLocaleString()}）</span>`:`累計LTV ¥${ltvBefore.toLocaleString()}／閾値 ¥${threshold.toLocaleString()}`;
+              const mixedNote=r.promoted&&r.adSessions>0?`<br>今月: 通常${r.adSessions}回＋昇格${r.promotedSessions}回`:'';
+              return `報酬単価 ¥${r.unitReward.toLocaleString()}/回（${sourceLabel(c.source)}）<br>${ltvBadge}${mixedNote}`;
+            })()
+            :`報酬単価: ¥${r.unitReward.toLocaleString()}/回（${sourceLabel(c.source)}）`}
         </div>
         <div class="session-row">
           <div class="session-controls">
@@ -910,7 +1136,7 @@ function renderInput(){
           </div>
           <div class="session-reward">
             <div class="amount positive">¥${r.reward.toLocaleString()}</div>
-            <div class="unit-price">${r.promoted&&r.adSessions>0?`通常${r.adSessions}回×¥6,000+昇格${r.promotedSessions}回×¥${r.promotedRate.toLocaleString()}`:r.promoted?`@¥${r.unitReward.toLocaleString()}/回（⭐昇格）`:`@¥${r.unitReward.toLocaleString()}/回`}</div>
+            <div class="unit-price">${r.promoted&&r.adSessions>0?`通常${r.adSessions}回＋昇格${r.promotedSessions}回（平均¥${r.unitReward.toLocaleString()}/回）`:r.promoted?`@¥${r.unitReward.toLocaleString()}/回（⭐自力扱い）`:`@¥${r.unitReward.toLocaleString()}/回`}</div>
             ${r.count>0?`<div style="font-size:10px;color:var(--text-light);margin-top:2px">売上 ¥${r.revenue.toLocaleString()}</div>`:''}
           </div>
         </div>
@@ -960,10 +1186,13 @@ function renderReport(){
     }else{
       html+=`<table class="report-table"><tr><th>ゲスト</th><th>流入</th><th>回数</th><th>セッション料</th><th>売上</th><th>単価</th><th>報酬</th></tr>`;
       list.forEach(d=>{
-        const isSelfVar=d.source==='self';
         const customMark=d.isCustom?' <span style="font-size:10px;color:#16a085">⚙️</span>':'';
-        const priceCell=d.isCustom?'¥'+d.sessionPrice.toLocaleString():(isSelfVar?'¥'+d.sessionPrice.toLocaleString():'—');
-        html+=`<tr><td class="name-col">${esc(d.client.name)}${customMark}</td><td><span class="badge source-${d.source}">${sourceLabel(d.source)}</span></td><td>${d.count}回</td><td>${priceCell}</td><td>${d.revenue?'¥'+d.revenue.toLocaleString():'—'}</td><td>¥${d.unitReward.toLocaleString()}</td><td style="font-weight:700;color:var(--green)">¥${d.reward.toLocaleString()}</td></tr>`;
+        const planMark=d.client.plan==='lite'?' <span style="font-size:10px;color:#E8913A;font-weight:700">Lite</span>':'';
+        // セッション料: 単一価格なら表示、混在なら「混合」と表示
+        const priceCell=d.priceTallies&&Object.keys(d.priceTallies).length>1
+          ? '混合'
+          : (d.source==='monitor'?'—':'¥'+(d.sessionPrice||0).toLocaleString());
+        html+=`<tr><td class="name-col">${esc(d.client.name)}${planMark}${customMark}</td><td><span class="badge source-${d.source}">${sourceLabel(d.source)}</span></td><td>${d.count}回</td><td>${priceCell}</td><td>${d.revenue?'¥'+d.revenue.toLocaleString():'—'}</td><td>¥${d.unitReward.toLocaleString()}</td><td style="font-weight:700;color:var(--green)">¥${d.reward.toLocaleString()}</td></tr>`;
       });
       const subtotal=list.reduce((s,d)=>s+d.reward,0);
       const subRev=list.reduce((s,d)=>s+d.revenue,0);
@@ -979,39 +1208,51 @@ function renderReport(){
     <div class="info-row" style="padding:10px 0;border-top:1px dashed var(--border);margin-top:6px"><span class="label" style="font-weight:700">セッション売上 合計</span><span class="val" style="font-size:16px;color:#b7791f">¥${calc.totalRevenue.toLocaleString()}</span></div>
     <div class="info-row" style="padding:12px 0;font-size:16px"><span class="label" style="font-size:14px;font-weight:700">合計報酬額</span><span class="val" style="font-size:22px;color:var(--accent)">¥${calc.totalReward.toLocaleString()}</span></div>
   </div>`;
-  // 報酬額の調整セクション
+  // 報酬額の調整セクション（管理者のみ操作可。スタッフには調整後金額の表示のみ）
   const adjStaffKey=isMaster?'__admin':(currentStaffId||'__none');
   const adj=getAdjustment(mk,adjStaffKey);
   const adjAmount=adj.enabled?(Number(adj.amount)||0):0;
   const finalTotal=calc.totalReward+adjAmount;
-  html+=`<div style="margin-top:16px;padding:14px;border:2px dashed var(--border);border-radius:10px;background:${adj.enabled?'#fef9e7':'#fafafa'}">
-    <div style="font-weight:700;margin-bottom:8px">⚙️ 報酬額の調整（イレギュラー対応）</div>
-    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:6px 0">
-      <input type="checkbox" id="adjEnabled" ${adj.enabled?'checked':''} onchange="toggleAdjustment('${mk}','${adjStaffKey}',this.checked)" style="width:18px;height:18px;cursor:pointer">
-      <span style="font-weight:600">報酬調整を適用する</span>
-    </label>
-    <div id="adjFields" class="${adj.enabled?'':'hidden'}" style="margin-top:10px">
-      <div style="font-size:11px;color:var(--text-light);margin-bottom:8px">プラスは加算、マイナスは減額。例: -5000 / +10000</div>
-      <div style="display:grid;grid-template-columns:1fr 2fr;gap:10px;margin-bottom:10px">
-        <div>
-          <label style="font-size:12px;display:block;margin-bottom:4px">調整額（円）</label>
-          <input type="number" id="adjAmount" value="${adj.amount||0}" placeholder="例: -5000" style="width:100%">
+  if(isMaster){
+    html+=`<div style="margin-top:16px;padding:14px;border:2px dashed var(--border);border-radius:10px;background:${adj.enabled?'#fef9e7':'#fafafa'}">
+      <div style="font-weight:700;margin-bottom:8px">⚙️ 報酬額の調整（イレギュラー対応）<span style="font-size:11px;color:var(--text-light);margin-left:6px">🔒 管理者のみ</span></div>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:6px 0">
+        <input type="checkbox" id="adjEnabled" ${adj.enabled?'checked':''} onchange="toggleAdjustment('${mk}','${adjStaffKey}',this.checked)" style="width:18px;height:18px;cursor:pointer">
+        <span style="font-weight:600">報酬調整を適用する</span>
+      </label>
+      <div id="adjFields" class="${adj.enabled?'':'hidden'}" style="margin-top:10px">
+        <div style="font-size:11px;color:var(--text-light);margin-bottom:8px">プラスは加算、マイナスは減額。例: -5000 / +10000</div>
+        <div style="display:grid;grid-template-columns:1fr 2fr;gap:10px;margin-bottom:10px">
+          <div>
+            <label style="font-size:12px;display:block;margin-bottom:4px">調整額（円）</label>
+            <input type="number" id="adjAmount" value="${adj.amount||0}" placeholder="例: -5000" style="width:100%">
+          </div>
+          <div>
+            <label style="font-size:12px;display:block;margin-bottom:4px">理由</label>
+            <input type="text" id="adjReason" value="${esc(adj.reason||'')}" placeholder="例: 諸事情により減額" style="width:100%">
+          </div>
         </div>
-        <div>
-          <label style="font-size:12px;display:block;margin-bottom:4px">理由</label>
-          <input type="text" id="adjReason" value="${esc(adj.reason||'')}" placeholder="例: 諸事情により減額" style="width:100%">
-        </div>
+        <button class="btn btn-primary" onclick="saveAdjustment('${mk}','${adjStaffKey}')">調整を保存</button>
       </div>
-      <button class="btn btn-primary" onclick="saveAdjustment('${mk}','${adjStaffKey}')">調整を保存</button>
-    </div>
-    ${adj.enabled?`
-    <div style="margin-top:14px;padding:10px;background:#fff;border-radius:8px;border:1px solid var(--border)">
+      ${adj.enabled?`
+      <div style="margin-top:14px;padding:10px;background:#fff;border-radius:8px;border:1px solid var(--border)">
+        <div style="font-size:13px;display:flex;justify-content:space-between"><span>調整前</span><span>¥${calc.totalReward.toLocaleString()}</span></div>
+        <div style="font-size:13px;display:flex;justify-content:space-between"><span>調整額</span><span style="color:${adjAmount>=0?'var(--green)':'#c0392b'}">${adjAmount>=0?'+':''}¥${adjAmount.toLocaleString()}</span></div>
+        ${adj.reason?`<div style="font-size:11px;color:var(--text-light);margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)">理由: ${esc(adj.reason)}</div>`:''}
+        <div style="font-size:18px;font-weight:700;color:var(--accent);margin-top:10px;padding-top:10px;border-top:2px solid var(--border);display:flex;justify-content:space-between"><span style="font-size:14px">調整後支給額</span><span>¥${finalTotal.toLocaleString()}</span></div>
+      </div>`:''}
+    </div>`;
+  }else if(adj.enabled){
+    // スタッフには、管理者が調整した結果のみを表示（編集不可）
+    html+=`<div style="margin-top:16px;padding:14px;border:1px solid var(--border);border-radius:10px;background:#fff">
+      <div style="font-weight:700;margin-bottom:8px;font-size:13px">📝 管理者調整の適用結果</div>
       <div style="font-size:13px;display:flex;justify-content:space-between"><span>調整前</span><span>¥${calc.totalReward.toLocaleString()}</span></div>
       <div style="font-size:13px;display:flex;justify-content:space-between"><span>調整額</span><span style="color:${adjAmount>=0?'var(--green)':'#c0392b'}">${adjAmount>=0?'+':''}¥${adjAmount.toLocaleString()}</span></div>
       ${adj.reason?`<div style="font-size:11px;color:var(--text-light);margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)">理由: ${esc(adj.reason)}</div>`:''}
       <div style="font-size:18px;font-weight:700;color:var(--accent);margin-top:10px;padding-top:10px;border-top:2px solid var(--border);display:flex;justify-content:space-between"><span style="font-size:14px">調整後支給額</span><span>¥${finalTotal.toLocaleString()}</span></div>
-    </div>`:''}
-  </div></div>`;
+    </div>`;
+  }
+  html+=`</div>`;
   el.innerHTML=html;
 }
 
@@ -1023,7 +1264,8 @@ function getAdjustment(mk,staffKey){
   return D.adjustments[mk][staffKey];
 }
 function toggleAdjustment(mk,staffKey,enabled){
-  // 入力中の値を保持してから切り替え
+  // 不正防止: 管理者以外は報酬調整不可
+  if(!isMaster){alert('報酬調整は管理者のみ可能です');render();return}
   const adj=getAdjustment(mk,staffKey);
   const inpA=document.getElementById('adjAmount');
   const inpR=document.getElementById('adjReason');
@@ -1033,6 +1275,8 @@ function toggleAdjustment(mk,staffKey,enabled){
   save();render();
 }
 function saveAdjustment(mk,staffKey){
+  // 不正防止: 管理者以外は報酬調整不可
+  if(!isMaster){alert('報酬調整は管理者のみ可能です');return}
   const adj=getAdjustment(mk,staffKey);
   adj.amount=parseInt(document.getElementById('adjAmount').value)||0;
   adj.reason=document.getElementById('adjReason').value||'';
@@ -1062,32 +1306,33 @@ function renderClients(){
   sorted.forEach(c=>{
     const tk=getTicketInfo(c.id);
     const sourceBadge=c.source?'<span class="badge source-'+c.source+'">'+sourceLabel(c.source)+'</span>':'';
+    const isNR=c.service==='noic'||c.service==='resync';
+    const planBadge=isNR?(c.plan==='lite'?'<span class="badge" style="background:#E8913A">Lite</span>':'<span class="badge" style="background:#16a085">Basic</span>'):'';
     const staff=findStaff(c.staffId);
     const staffBadge=isMaster&&staff?'<span class="badge" style="background:#34495e">'+esc(staff.name)+'</span>':'';
     const customBadge=c.customEnabled?'<span class="badge" style="background:#16a085">⚙️カスタム</span>':'';
     const isRoom=c.service==='aden'||c.service==='sub-svc';
-    const isSelfVar=(c.service==='noic'||c.service==='resync')&&c.source==='self';
     let metaText;
     if(c.customEnabled){
       metaText='カスタム: 単価 ¥'+(c.customSessionPrice||0).toLocaleString()+' ／ 報酬 ¥'+(c.customReward||0).toLocaleString()+'/回';
     }else if(isRoom){metaText='セッション料 ¥'+(c.sessionPrice||0).toLocaleString()}
-    else if(isSelfVar){metaText='セッション料 ¥'+(c.sessionPrice||0).toLocaleString()+'（基準¥18,000）'}
-    else{
-      const p=D.config.prices[c.service];
-      const unit=c.source==='ad'?p.ad:c.source==='monitor'?p.monitor:p.self;
-      // NOIC/resync 広告経由でセッション料金が標準と異なる場合は併記（25回超え昇格時の報酬計算用）
-      const isAd=c.source==='ad';
-      const isNonDefault=isAd&&c.sessionPrice&&c.sessionPrice!==(SERVICES[c.service].defaultPrice||18000);
-      if(isNonDefault){
-        const promotedRate=Math.max(0,c.sessionPrice-((SERVICES[c.service].defaultPrice||18000)-(p.self||10000)));
-        metaText='セッション料 ¥'+c.sessionPrice.toLocaleString()+' ／ 報酬 ¥'+(unit||0).toLocaleString()+'/回（昇格時 ¥'+promotedRate.toLocaleString()+'）';
-      }else{
-        metaText='報酬単価 ¥'+(unit||0).toLocaleString()+'/回';
-      }
+    else if(isNR){
+      // 累計LTVを表示
+      const ltv=getCumLTVBefore(c.id,currentMonth)+(D.sessions[currentMonth]?.[c.id]?D.sessions[currentMonth][c.id].count*(c.courses?.[0]?.unitPrice||c.sessionPrice||18000):0);
+      const totalLTV=Object.keys(D.sessions||{}).reduce((acc,mk)=>{
+        const s=D.sessions[mk]?.[c.id];return s?acc+s.count:acc;
+      },0);
+      // 累計LTVをコース単価を考慮して算出
+      let actualLTV=0;
+      for(let i=1;i<=totalLTV;i++)actualLTV+=getUnitPriceForSession(c,i);
+      const threshold=D.config.ltvThreshold||432000;
+      const ltvBadge=actualLTV>=threshold?'<span style="color:#d4ac0d;font-weight:600">⭐自力扱い昇格済</span>':'';
+      metaText=`累計 ${totalLTV}回 ／ 累計LTV ¥${actualLTV.toLocaleString()} ${ltvBadge}`;
     }
+    else{metaText='報酬単価 (詳細表示なし)'}
     html+=`<div style="padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="openEditClient('${c.id}')">
       <div style="display:flex;justify-content:space-between;align-items:center">
-        <div><span style="font-weight:700">${esc(c.name)}</span> <span class="badge ${svcClass(c.service)}">${svcLabel(c.service)}</span>${sourceBadge}${customBadge}${staffBadge}</div>
+        <div><span style="font-weight:700">${esc(c.name)}</span> <span class="badge ${svcClass(c.service)}">${svcLabel(c.service)}</span>${planBadge}${sourceBadge}${customBadge}${staffBadge}</div>
         <div style="font-size:12px;color:var(--text-light)">残${tk.remaining} / ${tk.total}回</div>
       </div>
       <div style="font-size:12px;color:var(--text-light);margin-top:2px">
@@ -1139,18 +1384,37 @@ function renderSettings(){
       <div style="font-size:11px;color:var(--text-light)">報酬 = セッション料金 − ルーム利用料</div>
     </div>
     <div class="card settings-section">
-      <h3>💰 NOIC（流入経路別）</h3>
-      <div class="form-group"><label>広告経由ゲスト 報酬（円/回）</label><input type="number" value="${D.config.prices.noic.ad}" onchange="updateConfig('noic_ad',this.value)"></div>
-      <div class="form-group"><label>自己集客ゲスト 基準報酬（円/回）<span style="font-size:11px;color:var(--text-light);margin-left:4px">※基準セッション料¥18,000のとき</span></label><input type="number" value="${D.config.prices.noic.self}" onchange="updateConfig('noic_self',this.value)"></div>
-      <div class="form-group"><label>モニターゲスト 報酬（円/回）</label><input type="number" value="${D.config.prices.noic.monitor}" onchange="updateConfig('noic_monitor',this.value)"></div>
-      <div style="font-size:11px;color:var(--text-light)">自己集客は「セッション料 − 控除（¥${(18000-D.config.prices.noic.self).toLocaleString()}）」で計算されます。</div>
+      <h3>🔁 LTV昇格制度</h3>
+      <div class="form-group"><label>LTV閾値（円）<span style="font-size:11px;color:var(--text-light);margin-left:4px">※累計売上がこの額を超えると広告→自己集客扱いに昇格</span></label><input type="number" value="${D.config.ltvThreshold||432000}" onchange="updateConfig('ltvThreshold',this.value)"></div>
+      <div style="font-size:11px;color:var(--text-light)">標準: ¥432,000（Basic単価 18,000円 × 24回 = 25回目から自力扱い）</div>
     </div>
     <div class="card settings-section">
-      <h3>💰 resync（流入経路別）</h3>
-      <div class="form-group"><label>広告経由ゲスト 報酬（円/回）</label><input type="number" value="${D.config.prices.resync.ad}" onchange="updateConfig('resync_ad',this.value)"></div>
-      <div class="form-group"><label>自己集客ゲスト 基準報酬（円/回）<span style="font-size:11px;color:var(--text-light);margin-left:4px">※基準セッション料¥18,000のとき</span></label><input type="number" value="${D.config.prices.resync.self}" onchange="updateConfig('resync_self',this.value)"></div>
-      <div class="form-group"><label>モニターゲスト 報酬（円/回）</label><input type="number" value="${D.config.prices.resync.monitor}" onchange="updateConfig('resync_monitor',this.value)"></div>
-      <div style="font-size:11px;color:var(--text-light)">自己集客は「セッション料 − 控除（¥${(18000-D.config.prices.resync.self).toLocaleString()}）」で計算されます。</div>
+      <h3>💰 NOIC Basic（50分・流入経路別）</h3>
+      <div class="form-group"><label>広告経由 報酬（円/回）</label><input type="number" value="${D.config.prices.noic.ad}" onchange="updateConfig('noic_ad',this.value)"></div>
+      <div class="form-group"><label>自己集客 報酬（円/回）<span style="font-size:11px;color:var(--text-light);margin-left:4px">※1-24回</span></label><input type="number" value="${D.config.prices.noic.self}" onchange="updateConfig('noic_self',this.value)"></div>
+      <div class="form-group"><label>モニター 報酬（円/回）</label><input type="number" value="${D.config.prices.noic.monitor}" onchange="updateConfig('noic_monitor',this.value)"></div>
+      <div style="font-size:11px;color:var(--text-light)">LTV超過後（25回〜）の報酬は ¥8,000 固定（広告・自力共通）</div>
+    </div>
+    <div class="card settings-section">
+      <h3>💰 NOIC Lite（25分・流入経路別）</h3>
+      <div class="form-group"><label>広告経由 報酬（円/回）</label><input type="number" value="${D.config.prices.noic.lite.ad}" onchange="updateConfig('noic_lite_ad',this.value)"></div>
+      <div class="form-group"><label>自己集客 報酬（円/回）</label><input type="number" value="${D.config.prices.noic.lite.self}" onchange="updateConfig('noic_lite_self',this.value)"></div>
+      <div class="form-group"><label>モニター 報酬（円/回）</label><input type="number" value="${D.config.prices.noic.lite.monitor}" onchange="updateConfig('noic_lite_monitor',this.value)"></div>
+      <div style="font-size:11px;color:var(--text-light)">LTV超過後（37回〜）の報酬は ¥6,000 固定（広告・自力共通）</div>
+    </div>
+    <div class="card settings-section">
+      <h3>💰 resync Basic（50分・流入経路別）</h3>
+      <div class="form-group"><label>広告経由 報酬（円/回）</label><input type="number" value="${D.config.prices.resync.ad}" onchange="updateConfig('resync_ad',this.value)"></div>
+      <div class="form-group"><label>自己集客 報酬（円/回）<span style="font-size:11px;color:var(--text-light);margin-left:4px">※1-24回</span></label><input type="number" value="${D.config.prices.resync.self}" onchange="updateConfig('resync_self',this.value)"></div>
+      <div class="form-group"><label>モニター 報酬（円/回）</label><input type="number" value="${D.config.prices.resync.monitor}" onchange="updateConfig('resync_monitor',this.value)"></div>
+      <div style="font-size:11px;color:var(--text-light)">LTV超過後（25回〜）の報酬は ¥8,000 固定（広告・自力共通）</div>
+    </div>
+    <div class="card settings-section">
+      <h3>💰 resync Lite（25分・流入経路別）</h3>
+      <div class="form-group"><label>広告経由 報酬（円/回）</label><input type="number" value="${D.config.prices.resync.lite.ad}" onchange="updateConfig('resync_lite_ad',this.value)"></div>
+      <div class="form-group"><label>自己集客 報酬（円/回）</label><input type="number" value="${D.config.prices.resync.lite.self}" onchange="updateConfig('resync_lite_self',this.value)"></div>
+      <div class="form-group"><label>モニター 報酬（円/回）</label><input type="number" value="${D.config.prices.resync.lite.monitor}" onchange="updateConfig('resync_lite_monitor',this.value)"></div>
+      <div style="font-size:11px;color:var(--text-light)">LTV超過後（37回〜）の報酬は ¥6,000 固定（広告・自力共通）</div>
     </div>
     <div class="card settings-section">
       <h3>🔑 管理者 PIN</h3>
@@ -1247,20 +1511,31 @@ function resetSessionPrice(clientId){
   }
   save();render();
 }
+function snapshotMonth(mk){
+  // 確定時の計算結果を保存（後でルール変更があっても金額が変わらないように）
+  if(!D.lockedSnapshots)D.lockedSnapshots={};
+  D.lockedSnapshots[mk]={};
+  D.clients.forEach(c=>{
+    const calc=calcClientMonth(c.id,mk);
+    if(calc.count>0)D.lockedSnapshots[mk][c.id]={...calc};
+  });
+}
 function toggleLock(){
   const mk=currentMonth;
   if(isLocked(mk)){
     if(!isMaster){alert('確定解除は管理者のみ可能です');return}
-    if(!confirm(monthDisplay(mk)+'の確定を解除しますか？'))return;
+    if(!confirm(monthDisplay(mk)+'の確定を解除しますか？\n※解除後は最新ルールで再計算されます。'))return;
     delete D.lockedMonths[mk];
+    // スナップショットは念のため保持（誤って解除→再確定で元に戻せるように）
   }else{
-    if(!confirm(monthDisplay(mk)+'を確定しますか？\n確定後は管理者のみ編集可能になります。'))return;
+    if(!confirm(monthDisplay(mk)+'を確定しますか？\n確定後は管理者のみ編集可能になります。\n（確定時点の報酬額がスナップショットとして保存されます）'))return;
     D.lockedMonths[mk]={lockedAt:Date.now()};
+    snapshotMonth(mk);
   }
   save();render();
 }
 function unlockMonth(mk){
-  if(!confirm(monthDisplay(mk)+'の確定を解除しますか？'))return;
+  if(!confirm(monthDisplay(mk)+'の確定を解除しますか？\n※解除後は最新ルールで再計算されます。'))return;
   delete D.lockedMonths[mk];save();render();
 }
 function updateConfig(key,val){
@@ -1269,9 +1544,16 @@ function updateConfig(key,val){
   else if(key==='noic_ad')D.config.prices.noic.ad=parseInt(val)||0;
   else if(key==='noic_self')D.config.prices.noic.self=parseInt(val)||0;
   else if(key==='noic_monitor')D.config.prices.noic.monitor=parseInt(val)||0;
+  else if(key==='noic_lite_ad')D.config.prices.noic.lite.ad=parseInt(val)||0;
+  else if(key==='noic_lite_self')D.config.prices.noic.lite.self=parseInt(val)||0;
+  else if(key==='noic_lite_monitor')D.config.prices.noic.lite.monitor=parseInt(val)||0;
   else if(key==='resync_ad')D.config.prices.resync.ad=parseInt(val)||0;
   else if(key==='resync_self')D.config.prices.resync.self=parseInt(val)||0;
   else if(key==='resync_monitor')D.config.prices.resync.monitor=parseInt(val)||0;
+  else if(key==='resync_lite_ad')D.config.prices.resync.lite.ad=parseInt(val)||0;
+  else if(key==='resync_lite_self')D.config.prices.resync.lite.self=parseInt(val)||0;
+  else if(key==='resync_lite_monitor')D.config.prices.resync.lite.monitor=parseInt(val)||0;
+  else if(key==='ltvThreshold')D.config.ltvThreshold=parseInt(val)||LTV_THRESHOLD_DEFAULT;
   else if(key==='masterPin')D.config.masterPin=String(val||'0000').padStart(4,'0');
   save();render();
 }
@@ -1333,27 +1615,94 @@ function deleteStaff(id){
 function openAddTicket(clientId){
   const c=D.clients.find(x=>x.id===clientId);if(!c)return;
   const tk=getTicketInfo(clientId);
+  const hasPlan=SERVICES[c.service]?.hasPlan;
+  // 現状のLTVから推奨単価を判定
+  const mk=currentMonth;
   let coursesHtml='';
   if(c.courses.length>0){
     coursesHtml='<div style="margin-bottom:14px"><label>購入履歴</label><div class="course-list">';
     c.courses.forEach((cr,i)=>{
-      const d=new Date(cr.addedAt);
-      coursesHtml+=`<div class="course-item"><span>${d.toLocaleDateString('ja-JP')} — ${cr.total}回</span>${isMaster?`<button class="course-del" onclick="deleteCourse('${clientId}',${i})" title="削除">×</button>`:'<span style="font-size:11px;color:var(--text-light)">🔒</span>'}</div>`;
+      const dt=new Date(cr.addedAt);
+      const planLabel=cr.plan==='lite'?' <span style="color:#E8913A;font-size:11px;font-weight:600">Lite</span>':(cr.plan==='basic'&&hasPlan?' <span style="color:#2D7D5F;font-size:11px;font-weight:600">Basic</span>':'');
+      const priceLabel=cr.unitPrice!=null?` <span style="font-size:11px;color:var(--text-light)">@¥${cr.unitPrice.toLocaleString()}</span>`:'';
+      coursesHtml+=`<div class="course-item"><span>${dt.toLocaleDateString('ja-JP')} — ${cr.total}回${planLabel}${priceLabel}</span>${isMaster?`<button class="course-del" onclick="deleteCourse('${clientId}',${i})" title="削除">×</button>`:'<span style="font-size:11px;color:var(--text-light)">🔒</span>'}</div>`;
     });
     coursesHtml+=`</div><div style="font-size:12px;color:var(--text-light);margin-top:4px">合計 ${tk.total}回購入 ／ ${tk.used}回消化 ／ 残り ${tk.remaining}回</div></div>`;
   }
+  // 現在の累計LTV（参考表示）
+  const ltvBefore=getCumLTVBefore(c.id,mk);
+  const isRoom=c.service==='aden'||c.service==='sub-svc';
+  // プラン選択 (NOIC/resyncのみ)
+  const initialPlan=c.plan||'basic';
+  // デフォルト単価のサジェスト
+  let suggestedPrice;
+  if(isRoom){
+    suggestedPrice=SERVICES[c.service].defaultPrice||18000;
+  }else if(hasPlan){
+    // LTV 432,000円以上なら、値引き(15000)を推奨
+    if(ltvBefore>=(D.config.ltvThreshold||432000)){
+      suggestedPrice=initialPlan==='lite'?12000:15000;
+    }else{
+      suggestedPrice=initialPlan==='lite'?12000:18000;
+    }
+  }else{
+    suggestedPrice=c.sessionPrice||18000;
+  }
+  // コース追加時はスタッフもプラン選択・単価変更可（Basic→Lite継続などに対応）
+  const planSelector=hasPlan?`
+    <div class="form-group"><label>プラン</label>
+      <div class="source-radio-group" id="tkPlanGroup">
+        <div class="source-radio active" data-plan="basic" onclick="selectTicketPlan('basic')">Basic（50分）</div>
+        <div class="source-radio" data-plan="lite" onclick="selectTicketPlan('lite')">Lite（25分）</div>
+      </div>
+    </div>`:'';
+  const ltvDisplay=hasPlan?`
+    <div style="background:#f0f9f4;border-radius:8px;padding:10px;margin-bottom:14px;font-size:12px">
+      <div style="color:var(--text-light);margin-bottom:4px">📊 累計LTV（参考）</div>
+      <div style="font-size:15px;font-weight:700;color:var(--accent)">¥${ltvBefore.toLocaleString()}</div>
+      ${ltvBefore>=(D.config.ltvThreshold||432000)?'<div style="color:#d4ac0d;margin-top:4px;font-weight:600">⭐ LTV 432,000円を超過済 — 25回〜値引き単価(¥15,000)を推奨</div>':`<div style="color:var(--text-light);margin-top:4px">あと ¥${((D.config.ltvThreshold||432000)-ltvBefore).toLocaleString()} で自力扱いに昇格</div>`}
+    </div>`:'';
   const html=`
-    <div class="modal-header"><h2>🎫 ${esc(c.name)} — チケット追加</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <div class="modal-header"><h2>🎫 ${esc(c.name)} — コース追加</h2><button class="modal-close" onclick="closeModal()">×</button></div>
     ${coursesHtml}
-    <div class="form-group"><label>追加する回数</label><input id="tkCount" type="number" placeholder="例: 10" inputmode="numeric" min="1"></div>
+    ${ltvDisplay}
+    ${planSelector}
+    <div class="form-group"><label>追加する回数</label><input id="tkCount" type="number" placeholder="例: 16" inputmode="numeric" min="1"></div>
+    <div class="form-group"><label>セッション単価（円/回） <span style="font-size:11px;color:var(--text-light)">※コース内のセッションはこの単価で計上</span></label><input id="tkUnitPrice" type="number" inputmode="numeric" min="0" oninput="this.dataset.userTouched=1" value="${suggestedPrice}"></div>
     <button class="btn btn-primary" onclick="saveTicket('${clientId}')">追加する</button>`;
   openModal(html);
+  // プラン選択の初期化
+  window._tkPlan=initialPlan;
+  setTimeout(()=>{
+    if(hasPlan){
+      document.querySelectorAll('#tkPlanGroup .source-radio').forEach(r=>{
+        r.classList.toggle('active',r.dataset.plan===initialPlan);
+      });
+    }
+  },10);
+}
+function selectTicketPlan(plan){
+  window._tkPlan=plan;
+  document.querySelectorAll('#tkPlanGroup .source-radio').forEach(r=>{
+    r.classList.toggle('active',r.dataset.plan===plan);
+  });
+  // 単価フィールドを自動更新（ユーザーが手で変えた場合は上書きしない）
+  const inp=document.getElementById('tkUnitPrice');
+  if(inp&&!inp.dataset.userTouched){
+    inp.value=plan==='lite'?12000:18000;
+  }
 }
 function saveTicket(clientId){
   const c=D.clients.find(x=>x.id===clientId);if(!c)return;
   const count=parseInt(document.getElementById('tkCount').value)||0;
   if(count<=0){alert('1以上の回数を入力してください');return}
-  c.courses.push({id:'tk_'+Date.now(),total:count,addedAt:Date.now()});
+  const hasPlan=SERVICES[c.service]?.hasPlan;
+  // コース追加時はスタッフもプラン・単価を設定可（Basic→Lite継続等に対応）
+  const planVal=hasPlan?(window._tkPlan||c.plan||'basic'):'basic';
+  const inpPrice=document.getElementById('tkUnitPrice');
+  let unitPrice=inpPrice?parseInt(inpPrice.value)||0:0;
+  if(unitPrice<=0)unitPrice=c.sessionPrice||SERVICES[c.service]?.defaultPrice||18000;
+  c.courses.push({id:'tk_'+Date.now(),total:count,addedAt:Date.now(),unitPrice,plan:planVal});
   save();closeModal();render();
 }
 function deleteCourse(clientId,idx){
@@ -1376,15 +1725,24 @@ function buildServiceRadios(selectedSvc){
     </div>`;
   }).join('');
 }
-let _modalSvc='aden',_modalSrc='ad',_modalStaffId=null;
+let _modalSvc='aden',_modalSrc='ad',_modalPlan='basic',_modalStaffId=null;
 function selectService(svc){
   _modalSvc=svc;
   refreshModalServiceUI();
 }
 function selectSource(src){
   _modalSrc=src;
-  document.querySelectorAll('.source-radio').forEach(r=>r.classList.toggle('active',r.dataset.src===src));
+  document.querySelectorAll('.source-radio[data-src]').forEach(r=>r.classList.toggle('active',r.dataset.src===src));
   refreshModalServiceUI();
+}
+function selectPlan(plan){
+  _modalPlan=plan;
+  document.querySelectorAll('.source-radio[data-plan]').forEach(r=>r.classList.toggle('active',r.dataset.plan===plan));
+  // セッション料金のデフォルトを更新（ユーザーが手動編集してなければ）
+  const inp=document.getElementById('mPrice')||document.getElementById('ePrice');
+  if(inp&&!inp.dataset.userTouched){
+    inp.value=plan==='lite'?12000:18000;
+  }
 }
 function refreshModalServiceUI(){
   document.querySelectorAll('.svc-radio').forEach(r=>{
@@ -1393,18 +1751,24 @@ function refreshModalServiceUI(){
   const isRoom=_modalSvc==='aden'||_modalSvc==='sub-svc';
   const isSelfVar=(_modalSvc==='noic'||_modalSvc==='resync')&&_modalSrc==='self';
   const isAdNoicResync=(_modalSvc==='noic'||_modalSvc==='resync')&&_modalSrc==='ad';
-  const isHybrid=isRoom||isSelfVar||(isMaster&&isAdNoicResync);
+  const isHybrid=isRoom||isSelfVar||isAdNoicResync;
   const hasSource=SERVICES[_modalSvc].hasSource;
+  const hasPlan=SERVICES[_modalSvc].hasPlan;
   const sourceGroup=document.getElementById('mSourceGroup');
   if(sourceGroup)sourceGroup.classList.toggle('hidden',!hasSource);
+  const planGroup=document.getElementById('mPlanGroup');
+  if(planGroup)planGroup.classList.toggle('hidden',!hasPlan);
   const priceGroup=document.getElementById('mPriceGroup');
   const priceLabel=document.getElementById('mPriceLabel');
   if(priceGroup&&priceLabel){
     if(isHybrid){
       priceGroup.classList.remove('hidden');
-      priceLabel.innerHTML=isSelfVar?'セッション料金（円）／基準¥18,000':isAdNoicResync?'セッション料金（円） <span style="font-size:11px;color:var(--text-light)">※25回超え昇格時の報酬計算に使用</span>':'セッション料金（円）';
+      priceLabel.innerHTML=isSelfVar?'セッション料金（円）':isAdNoicResync?'セッション料金（円） <span style="font-size:11px;color:var(--text-light)">※コース単価のデフォルトとして使用</span>':'セッション料金（円）';
       const inp=document.getElementById('mPrice')||document.getElementById('ePrice');
-      if(inp&&!inp.dataset.userTouched)inp.value=SERVICES[_modalSvc].defaultPrice;
+      if(inp&&!inp.dataset.userTouched){
+        if(hasPlan&&_modalPlan==='lite')inp.value=12000;
+        else inp.value=SERVICES[_modalSvc].defaultPrice;
+      }
     }else{
       priceGroup.classList.add('hidden');
     }
@@ -1415,21 +1779,35 @@ function openAddClient(){
   if(isMaster&&D.config.staff.length===0){alert('まず「設定」タブでスタッフを追加してください');return}
   _modalSvc=clientFilter==='all'?'aden':clientFilter;
   _modalSrc='ad';
+  _modalPlan='basic';
   _modalStaffId=isMaster?D.config.staff[0].id:currentStaffId;
   const staffPicker=isMaster?`<div class="form-group"><label>担当スタッフ</label><select id="mStaff" onchange="_modalStaffId=this.value">${D.config.staff.map(s=>`<option value="${s.id}" ${s.id===_modalStaffId?'selected':''}>${esc(s.name)}</option>`).join('')}</select></div>`:'';
+  const lockNote='<span style="font-size:11px;color:var(--text-light);margin-left:6px">🔒 管理者のみ変更可</span>';
+  // サービス区分: 新規登録時はスタッフも選択可（登録後の編集は管理者のみ）
+  const serviceField=`<div class="svc-radio-group">${buildServiceRadios(_modalSvc)}</div>`;
+  // 流入経路: 新規登録時はスタッフも選択可（登録後の編集は管理者のみ）
+  const sourceField=`<div class="source-radio-group">
+        <div class="source-radio active" data-src="ad" onclick="selectSource('ad')">広告経由</div>
+        <div class="source-radio" data-src="self" onclick="selectSource('self')">自己集客</div>
+        <div class="source-radio" data-src="monitor" onclick="selectSource('monitor')">モニター</div>
+      </div>`;
+  // プラン: 新規登録時はスタッフも選択可
+  const planField=`<div class="source-radio-group">
+        <div class="source-radio active" data-plan="basic" onclick="selectPlan('basic')">Basic（50分）</div>
+        <div class="source-radio" data-plan="lite" onclick="selectPlan('lite')">Lite（25分）</div>
+      </div>`;
   const html=`
     <div class="modal-header"><h2>ゲストを追加</h2><button class="modal-close" onclick="closeModal()">×</button></div>
     <div class="form-group"><label>ゲスト名</label><input id="mName" type="text" placeholder="例: 田中太郎"></div>
     ${staffPicker}
     <div class="form-group"><label>サービス区分</label>
-      <div class="svc-radio-group">${buildServiceRadios(_modalSvc)}</div>
+      ${serviceField}
     </div>
     <div class="form-group hidden" id="mSourceGroup"><label>流入経路</label>
-      <div class="source-radio-group">
-        <div class="source-radio active" data-src="ad" onclick="selectSource('ad')">広告経由</div>
-        <div class="source-radio" data-src="self" onclick="selectSource('self')">自己集客</div>
-        <div class="source-radio" data-src="monitor" onclick="selectSource('monitor')">モニター</div>
-      </div>
+      ${sourceField}
+    </div>
+    <div class="form-group hidden" id="mPlanGroup"><label>プラン（NOIC/resyncのみ）</label>
+      ${planField}
     </div>
     <div class="form-group" id="mPriceGroup"><label id="mPriceLabel">セッション料金（円）</label><input id="mPrice" type="number" oninput="this.dataset.userTouched=1" value="${SERVICES[_modalSvc].defaultPrice||18000}"></div>
     ${isMaster?`
@@ -1474,12 +1852,13 @@ function toggleAddCustomMode(on){
 function saveNewClient(){
   const name=document.getElementById('mName').value.trim();
   if(!name){alert('名前を入力してください');return}
+  // 新規登録時はスタッフも全項目を設定可（登録後の編集は管理者のみ）
   const svc=_modalSvc;
   const src=SERVICES[svc].hasSource?_modalSrc:null;
   const isRoom=svc==='aden'||svc==='sub-svc';
   const isSelfVar=(svc==='noic'||svc==='resync')&&src==='self';
   const isAdNoicResync=(svc==='noic'||svc==='resync')&&src==='ad';
-  const hasPriceInput=isRoom||isSelfVar||(isMaster&&isAdNoicResync);
+  const hasPriceInput=isRoom||isSelfVar||isAdNoicResync;
   // カスタムモード（管理者のみ・新規追加時）
   const customCb=document.getElementById('mCustomEnabled');
   const useCustom=isMaster&&customCb&&customCb.checked;
@@ -1488,17 +1867,23 @@ function saveNewClient(){
     customSessionPrice=parseInt(document.getElementById('mCustomPrice').value)||0;
     customReward=parseInt(document.getElementById('mCustomReward').value)||0;
     price=customSessionPrice;
+  }else if(hasPriceInput){
+    const inp=document.getElementById('mPrice');
+    price=inp?(parseInt(inp.value)||SERVICES[svc].defaultPrice):SERVICES[svc].defaultPrice;
   }else{
-    price=hasPriceInput?(parseInt(document.getElementById('mPrice').value)||SERVICES[svc].defaultPrice):SERVICES[svc].defaultPrice;
+    price=SERVICES[svc].defaultPrice;
   }
   const ticket=parseInt(document.getElementById('mTicket').value)||0;
+  if(ticket<=0){alert('購入回数（チケット）を1回以上で入力してください');return}
+  const planVal=SERVICES[svc].hasPlan?(_modalPlan||'basic'):'basic';
   const courses=[];
-  if(ticket>0)courses.push({id:'tk_'+Date.now(),total:ticket,addedAt:Date.now()});
+  courses.push({id:'tk_'+Date.now(),total:ticket,addedAt:Date.now(),unitPrice:price,plan:planVal});
   D.clients.push({
     id:'c_'+Date.now()+'_'+Math.random().toString(36).slice(2,6),
     name,
     service:svc,
     source:src,
+    plan:planVal,
     sessionPrice:price,
     courses,
     staffId:_modalStaffId||currentStaffId,
@@ -1513,14 +1898,18 @@ function openEditClient(id){
   const c=D.clients.find(x=>x.id===id);if(!c)return;
   _modalSvc=c.service;
   _modalSrc=c.source||'ad';
+  _modalPlan=c.plan||'basic';
   _modalStaffId=c.staffId||(isMaster&&D.config.staff[0]?D.config.staff[0].id:currentStaffId);
   const tk=getTicketInfo(id);
+  const hasPlanForEdit=SERVICES[c.service]?.hasPlan;
   let coursesHtml='';
   if(c.courses.length>0){
     coursesHtml='<div class="form-group"><label>🎫 チケット（購入履歴）</label><div class="course-list">';
     c.courses.forEach((cr,i)=>{
       const d=new Date(cr.addedAt);
-      coursesHtml+=`<div class="course-item"><span>${d.toLocaleDateString('ja-JP')} — ${cr.total}回</span>${isMaster?`<button class="course-del" onclick="deleteCourseInEdit('${id}',${i})" title="削除">×</button>`:'<span style="font-size:11px;color:var(--text-light)">🔒</span>'}</div>`;
+      const planLabel=cr.plan==='lite'?' <span style="color:#E8913A;font-size:11px;font-weight:600">Lite</span>':(cr.plan==='basic'&&hasPlanForEdit?' <span style="color:#2D7D5F;font-size:11px;font-weight:600">Basic</span>':'');
+      const priceLabel=cr.unitPrice!=null?` <span style="font-size:11px;color:var(--text-light)">@¥${cr.unitPrice.toLocaleString()}</span>`:'';
+      coursesHtml+=`<div class="course-item"><span>${d.toLocaleDateString('ja-JP')} — ${cr.total}回${planLabel}${priceLabel}</span>${isMaster?`<button class="course-del" onclick="deleteCourseInEdit('${id}',${i})" title="削除">×</button>`:'<span style="font-size:11px;color:var(--text-light)">🔒</span>'}</div>`;
     });
     coursesHtml+=`</div><div style="font-size:12px;color:var(--text-light);margin-top:4px">合計 ${tk.total}回 ／ 消化 ${tk.used}回 ／ <b>残り ${tk.remaining}回</b></div></div>`;
   }
@@ -1543,6 +1932,13 @@ function openEditClient(id){
         <div class="source-radio ${_modalSrc==='monitor'?'active':''}" data-src="monitor" onclick="selectSource('monitor')">モニター</div>
       </div>`
     : `<div style="padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:#f8f8f8;color:var(--text);font-weight:600">${sourceLabels[c.source]||'—'}</div>`;
+  const hasPlanEdit=SERVICES[c.service]?.hasPlan;
+  const planField=isMaster&&hasPlanEdit
+    ? `<div class="source-radio-group">
+        <div class="source-radio ${_modalPlan==='basic'?'active':''}" data-plan="basic" onclick="selectPlan('basic')">Basic（50分）</div>
+        <div class="source-radio ${_modalPlan==='lite'?'active':''}" data-plan="lite" onclick="selectPlan('lite')">Lite（25分）</div>
+      </div>`
+    : hasPlanEdit?`<div style="padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:#f8f8f8;color:var(--text);font-weight:600">${(c.plan||'basic')==='lite'?'Lite（25分）':'Basic（50分）'}</div>`:'';
   const isCustom=!!c.customEnabled;
   const customSection=isMaster?`
     <div class="form-group" style="border:1.5px solid ${isCustom?'var(--accent)':'var(--border)'};border-radius:10px;padding:12px;background:${isCustom?'#f0f9f4':'#fafafa'}">
@@ -1567,6 +1963,9 @@ function openEditClient(id){
     </div>
     <div class="form-group ${hasSource?'':'hidden'}" id="mSourceGroup"><label>流入経路${!isMaster?' '+lockNote:''}</label>
       ${sourceField}
+    </div>
+    <div class="form-group ${hasPlanEdit?'':'hidden'}" id="mPlanGroup"><label>プラン${!isMaster?' '+lockNote:''}</label>
+      ${planField}
     </div>
     <div class="form-group ${editIsHybrid&&!isCustom?'':'hidden'}" id="mPriceGroup"><label id="mPriceLabel">セッション料金（円）${editIsAdNoicResync?' <span style="font-size:11px;color:var(--text-light)">※25回超え昇格時の報酬計算に使用</span>':''}${!isMaster?' '+lockNote:''}</label><input id="ePrice" type="number" data-user-touched="1" value="${c.sessionPrice||SERVICES[c.service].defaultPrice||18000}" ${!isMaster?'disabled':''}></div>
     ${customSection}
@@ -1608,10 +2007,11 @@ function deleteCourseInEdit(clientId,idx){
 function saveEditClient(id){
   const c=D.clients.find(x=>x.id===id);if(!c)return;
   c.name=document.getElementById('eName').value.trim();
-  // 不正防止：サービス区分・流入経路は管理者のみ変更可
+  // 不正防止：サービス区分・流入経路・プランは管理者のみ変更可
   if(isMaster){
     c.service=_modalSvc;
     c.source=SERVICES[_modalSvc].hasSource?_modalSrc:null;
+    c.plan=SERVICES[_modalSvc].hasPlan?(_modalPlan||'basic'):'basic';
   }
   // スタッフは c.service / c.source を維持（既存値）
   if(isMaster&&_modalStaffId)c.staffId=_modalStaffId;
@@ -1642,7 +2042,11 @@ function saveEditClient(id){
     c.sessionPrice=SERVICES[c.service].defaultPrice;
   }
   const newTicket=parseInt(document.getElementById('eNewTicket').value)||0;
-  if(newTicket>0)c.courses.push({id:'tk_'+Date.now(),total:newTicket,addedAt:Date.now()});
+  if(newTicket>0){
+    // インライン追加時は client.sessionPrice + client.plan を継承
+    const unitPrice=c.sessionPrice||SERVICES[c.service]?.defaultPrice||18000;
+    c.courses.push({id:'tk_'+Date.now(),total:newTicket,addedAt:Date.now(),unitPrice,plan:c.plan||'basic'});
+  }
   save();closeModal();render();
 }
 function deleteClient(id){
@@ -1678,7 +2082,8 @@ function openModal(html){
   document.getElementById('modalContent').innerHTML=html;
   const ov=document.getElementById('modalOverlay');
   ov.classList.add('show');
-  ov.onmousedown=function(e){if(e.target===ov)closeModal()};
+  // 背景クリックでは閉じない（入力途中の誤操作防止）。閉じるのは右上×のみ
+  ov.onmousedown=null;
 }
 function closeModal(){
   const ov=document.getElementById('modalOverlay');
