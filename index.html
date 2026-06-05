@@ -415,6 +415,25 @@ function migrateData(d){
       if(!cr.plan)cr.plan=c.plan||'basic';
     });
   });
+  // 確定ロックを「スタッフ別」に正規化（旧: 月ごとグローバル {lockedAt:N} → 新: {staffId:lockedAt}）
+  Object.keys(d.lockedMonths||{}).forEach(mk=>{
+    const v=d.lockedMonths[mk];
+    if(!v||typeof v!=='object'){ d.lockedMonths[mk]={}; return; }
+    let globalAt=null;
+    if('lockedAt' in v) globalAt=v.lockedAt||Date.now();      // 旧グローバル形式
+    if('' in v) globalAt=globalAt||v['']||Date.now();          // GAS旧行（空staffId）
+    if(globalAt!=null){
+      const ns={};
+      Object.keys(v).forEach(k=>{ if(k!=='lockedAt'&&k!=='') ns[k]=v[k]; }); // 既存の正規ロックは保持
+      // その月にセッションがあるスタッフを確定対象にする（無ければ全スタッフ）
+      const staffWithData=new Set();
+      const ss=(d.sessions&&d.sessions[mk])?d.sessions[mk]:{};
+      (d.clients||[]).forEach(c=>{ if(ss[c.id]&&(ss[c.id].count||0)>0&&c.staffId) staffWithData.add(c.staffId); });
+      const targets=staffWithData.size>0?Array.from(staffWithData):(d.config.staff||[]).map(s=>s.id);
+      targets.forEach(sid=>{ if(ns[sid]==null) ns[sid]=globalAt; });
+      d.lockedMonths[mk]=ns;
+    }
+  });
   // 旧バージョンのスナップショット（フラット単価でコース値引きを無視した誤った値）を一度だけ破棄。
   // 破棄後は backfillLockedSnapshots() が正しいコース単価ベースで確定月を凍結し直す。
   // クラウド由来の正しいスナップショット（snapshotVersion>=2）は破棄しない。
@@ -430,6 +449,7 @@ function backfillLockedSnapshots(){
   Object.keys(D.lockedMonths).forEach(mk=>{
     if(!D.lockedSnapshots[mk])D.lockedSnapshots[mk]={};
     (D.clients||[]).forEach(c=>{
+      if(!isLockedForStaff(mk,c.staffId))return; // そのスタッフが確定した分だけ凍結
       if(D.lockedSnapshots[mk][c.id])return; // 既存は不変
       const calc=calcClientMonth(c.id,mk,{live:true});
       if(calc.count>0){D.lockedSnapshots[mk][c.id]={...calc};changed=true;}
@@ -781,7 +801,11 @@ function changeMonth(delta){
   currentMonth=monthKey(d);
   render();
 }
-function isLocked(mk){return!!D.lockedMonths[mk]}
+/* 確定ロックは「スタッフ別」。D.lockedMonths[mk]={ [staffId]: lockedAt } */
+function isLockedForStaff(mk,staffId){return !!(D.lockedMonths[mk]&&staffId&&D.lockedMonths[mk][staffId]);}
+function isLockedForClient(mk,clientId){const c=D.clients.find(x=>x.id===clientId);return c?isLockedForStaff(mk,c.staffId):false;}
+/* 現在の閲覧者にとって編集ロックされているか（管理者は常に編集可） */
+function isLocked(mk){ if(isMaster)return false; return isLockedForStaff(mk,currentStaffId); }
 
 /* ===== Session Helpers ===== */
 function getSessionData(clientId,mk){
@@ -884,7 +908,7 @@ function calcClientMonth(clientId,mk,opts){
   // 確定済み月は「確定時点のスナップショット」を返す。
   // → 後からコース単価を変更・追加しても、過去の確定月の金額は変わらない（遡及しない）。
   // opts.live=true のときだけ凍結を無視して最新データでライブ再計算する（スナップショット生成用）。
-  if(!(opts&&opts.live) && D.lockedMonths&&D.lockedMonths[mk] && D.lockedSnapshots&&D.lockedSnapshots[mk]&&D.lockedSnapshots[mk][clientId]){
+  if(!(opts&&opts.live) && isLockedForStaff(mk,c.staffId) && D.lockedSnapshots&&D.lockedSnapshots[mk]&&D.lockedSnapshots[mk][clientId]){
     return D.lockedSnapshots[mk][clientId];
   }
   const s=getSessionData(clientId,mk);
@@ -1179,10 +1203,13 @@ function renderInput(){
   }
 
   const lbtn=document.getElementById('lockButton');
-  if(locked){
-    lbtn.innerHTML=isMaster?`<button class="btn btn-unlock" onclick="toggleLock()">🔓 ${monthDisplay(mk)} の確定を解除</button>`:'';
+  if(isMaster){
+    // 管理者は確定操作をしない（解除は「設定 ＞ 確定済み月の管理」でスタッフ別に行う）
+    lbtn.innerHTML='';
+  }else if(isLockedForStaff(mk,currentStaffId)){
+    lbtn.innerHTML=`<div class="lock-banner" style="margin-top:12px"><span class="icon">🔒</span>${monthDisplay(mk)} のあなたの分は確定済みです（解除は管理者へ）</div>`;
   }else{
-    lbtn.innerHTML=`<button class="btn btn-lock" onclick="toggleLock()">🔒 ${monthDisplay(mk)} を確定する</button>`;
+    lbtn.innerHTML=`<button class="btn btn-lock" onclick="confirmMyMonth()">🔒 ${monthDisplay(mk)} を確定する</button>`;
   }
 }
 
@@ -1449,14 +1476,19 @@ function renderSettings(){
       <div style="font-size:11px;color:var(--text-light)">スタッフ個別の名前・PINは「👥 スタッフ管理」から変更します。</div>
     </div>
     <div class="card settings-section">
-      <h3>🔓 確定済み月の管理</h3>`;
-  const lockedKeys=Object.keys(D.lockedMonths).sort().reverse();
+      <h3>🔓 確定済み月の管理</h3>
+      <div style="font-size:12px;color:var(--text-light);margin-bottom:8px">スタッフごとに確定を解除できます。</div>`;
+  const lockedKeys=Object.keys(D.lockedMonths).filter(mk=>D.lockedMonths[mk]&&Object.keys(D.lockedMonths[mk]).length>0).sort().reverse();
   if(lockedKeys.length===0){
     html+='<div style="font-size:13px;color:var(--text-light)">確定済みの月はありません</div>';
   }else{
     lockedKeys.forEach(mk=>{
-      const dt=new Date(D.lockedMonths[mk].lockedAt);
-      html+=`<div class="info-row"><span>${monthDisplay(mk)}<br><span style="font-size:10px;color:var(--text-light)">${dt.toLocaleDateString('ja-JP')} 確定</span></span><button class="btn-sm btn-accent" onclick="unlockMonth('${mk}')">解除</button></div>`;
+      html+=`<div style="font-weight:700;margin:12px 0 4px">${monthDisplay(mk)}</div>`;
+      Object.keys(D.lockedMonths[mk]).forEach(sid=>{
+        const st=findStaff(sid);
+        const dt=new Date(D.lockedMonths[mk][sid]);
+        html+=`<div class="info-row"><span>${st?esc(st.name):esc(sid)}<br><span style="font-size:10px;color:var(--text-light)">${dt.toLocaleDateString('ja-JP')} 確定</span></span><button class="btn-sm btn-accent" onclick="unlockStaffMonth('${mk}','${sid}')">解除</button></div>`;
+      });
     });
   }
   html+=`</div>
@@ -1538,33 +1570,45 @@ function resetSessionPrice(clientId){
   }
   save();render();
 }
-function snapshotMonth(mk){
-  // 確定時の計算結果を保存（後からコース単価を変えても確定月の金額が変わらないように）。
-  // opts.live=true で最新のコース単価ベースの正しい計算を凍結する。
+function snapshotStaffMonth(mk,staffId){
+  // 指定スタッフの当月クライアントを「確定時点の正しい計算」で凍結する。
   if(!D.lockedSnapshots)D.lockedSnapshots={};
-  D.lockedSnapshots[mk]={};
+  if(!D.lockedSnapshots[mk])D.lockedSnapshots[mk]={};
   D.clients.forEach(c=>{
+    if(c.staffId!==staffId)return;
     const calc=calcClientMonth(c.id,mk,{live:true});
     if(calc.count>0)D.lockedSnapshots[mk][c.id]={...calc};
   });
 }
-function toggleLock(){
+/* 各スタッフが「自分の分」を確定する（解除は管理者のみ） */
+function confirmMyMonth(){
   const mk=currentMonth;
-  if(isLocked(mk)){
-    if(!isMaster){alert('確定解除は管理者のみ可能です');return}
-    if(!confirm(monthDisplay(mk)+'の確定を解除しますか？\n※解除後は最新ルールで再計算されます。'))return;
-    delete D.lockedMonths[mk];
-    // スナップショットは念のため保持（誤って解除→再確定で元に戻せるように）
-  }else{
-    if(!confirm(monthDisplay(mk)+'を確定しますか？\n確定後は管理者のみ編集可能になります。\n（確定時点の報酬額が保存され、以後コース単価を変えても確定月は変わりません）'))return;
-    D.lockedMonths[mk]={lockedAt:Date.now()};
-    snapshotMonth(mk);
+  if(isMaster){alert('確定は各スタッフが行います。\n管理者は「設定 ＞ 確定済み月の管理」でスタッフ別に解除できます。');return}
+  if(!currentStaffId)return;
+  if(isLockedForStaff(mk,currentStaffId)){
+    alert(monthDisplay(mk)+'は確定済みです。\n解除が必要な場合は管理者にご依頼ください。');return;
   }
+  if(!confirm(monthDisplay(mk)+'のあなたの分を確定しますか？\n確定後の編集・解除は管理者のみ可能です。\n（確定時点の報酬額が保存され、以後コース単価を変えても確定分は変わりません）'))return;
+  if(!D.lockedMonths[mk])D.lockedMonths[mk]={};
+  D.lockedMonths[mk][currentStaffId]=Date.now();
+  snapshotStaffMonth(mk,currentStaffId);
   save();render();
 }
-function unlockMonth(mk){
-  if(!confirm(monthDisplay(mk)+'の確定を解除しますか？\n※解除後は最新ルールで再計算されます。'))return;
-  delete D.lockedMonths[mk];save();render();
+/* 管理者が「スタッフ別」に確定を解除する */
+function unlockStaffMonth(mk,staffId){
+  if(!isMaster){alert('確定解除は管理者のみ可能です');return}
+  const st=findStaff(staffId);
+  if(!confirm(monthDisplay(mk)+'の「'+(st?st.name:staffId)+'」の確定を解除しますか？\n※解除後はそのスタッフ分が最新ルールで再計算されます。'))return;
+  if(D.lockedMonths[mk]){
+    delete D.lockedMonths[mk][staffId];
+    if(Object.keys(D.lockedMonths[mk]).length===0)delete D.lockedMonths[mk];
+  }
+  // 解除したスタッフのスナップショットは破棄（ライブ計算に戻す。再確定時に再生成される）
+  if(D.lockedSnapshots&&D.lockedSnapshots[mk]){
+    (D.clients||[]).forEach(c=>{ if(c.staffId===staffId) delete D.lockedSnapshots[mk][c.id]; });
+    if(Object.keys(D.lockedSnapshots[mk]).length===0)delete D.lockedSnapshots[mk];
+  }
+  save();render();
 }
 function updateConfig(key,val){
   if(key==='aden_room')D.config.prices.aden.room=parseInt(val)||0;
