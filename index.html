@@ -415,17 +415,9 @@ function migrateData(d){
       if(!cr.plan)cr.plan=c.plan||'basic';
     });
   });
-  // 確定済み月のスナップショット生成（旧ロジック=セッション数25回閾値で計算した値を保存）
-  // これにより 4月など既存の確定済み月の金額が新ロジックで変わるのを防ぐ
-  Object.keys(d.lockedMonths||{}).forEach(mk=>{
-    if(!d.lockedSnapshots[mk]||Object.keys(d.lockedSnapshots[mk]).length===0){
-      d.lockedSnapshots[mk]={};
-      (d.clients||[]).forEach(c=>{
-        const calc=_calcLegacyForSnapshot(c,mk,d);
-        if(calc.count>0)d.lockedSnapshots[mk][c.id]=calc;
-      });
-    }
-  });
+  // 旧スナップショット機構は廃止（端末ローカル限定＆コース値引きを無視して古い金額に固定する不具合の原因）。
+  // 端末に残った古いスナップショットを消去し、確定月も常に最新のコース単価でライブ計算する。
+  d.lockedSnapshots={};
 }
 /* 旧ロジック（セッション数25回閾値）で計算するpure function。
    既存の確定済み月のスナップショット生成専用。新規計算には使わない。 */
@@ -856,10 +848,8 @@ function getStandardReward(c,plan,source,promoted,unitPrice){
 function calcClientMonth(clientId,mk){
   const c=D.clients.find(x=>x.id===clientId);
   if(!c)return{count:0,reward:0,unitReward:0,sessionPrice:0,roomFee:0,revenue:0,service:null,source:null,isCustom:false,promoted:false,consumedTotal:0,adSessions:0,promotedSessions:0,promotedRate:0,ltvAtStart:0,ltvAfter:0};
-  // 確定済み月のスナップショット優先（4月など過去の確定値を保護）
-  if(D.lockedMonths&&D.lockedMonths[mk]&&D.lockedSnapshots&&D.lockedSnapshots[mk]&&D.lockedSnapshots[mk][clientId]){
-    return D.lockedSnapshots[mk][clientId];
-  }
+  // 確定月も常にライブ計算（コース単位の値引き単価・修正を正しく反映）。
+  // 旧スナップショット機構は端末ローカル限定＆コース値引きを無視するため廃止。
   const s=getSessionData(clientId,mk);
   const count=s?s.count:0;
 
@@ -1528,9 +1518,8 @@ function toggleLock(){
     delete D.lockedMonths[mk];
     // スナップショットは念のため保持（誤って解除→再確定で元に戻せるように）
   }else{
-    if(!confirm(monthDisplay(mk)+'を確定しますか？\n確定後は管理者のみ編集可能になります。\n（確定時点の報酬額がスナップショットとして保存されます）'))return;
+    if(!confirm(monthDisplay(mk)+'を確定しますか？\n確定後は管理者のみ編集可能になります。'))return;
     D.lockedMonths[mk]={lockedAt:Date.now()};
-    snapshotMonth(mk);
   }
   save();render();
 }
