@@ -116,6 +116,7 @@ function getAllData(){
   // 旧 trainerPin/trainerName を staff[0] に移行するための一時保持
   let legacyTrainerPin=null,legacyTrainerName=null;
   let snapshotVersion=0;
+  let lockedMonthsJson=null;
   cfgRows.forEach(r=>{
     if(r.key==='masterPin')config.masterPin=String(r.value).padStart(4,'0');
     else if(r.key==='trainerPin')legacyTrainerPin=String(r.value).padStart(4,'0');
@@ -123,6 +124,7 @@ function getAllData(){
     else if(r.key==='staff')try{config.staff=JSON.parse(r.value)||[]}catch(e){}
     else if(r.key==='prices')try{config.prices=JSON.parse(r.value)}catch(e){}
     else if(r.key==='snapshotVersion')snapshotVersion=Number(r.value)||0;
+    else if(r.key==='lockedMonths')lockedMonthsJson=r.value;
   });
   if((legacyTrainerName||legacyTrainerPin)&&config.staff.length===0){
     config.staff.push({
@@ -164,11 +166,15 @@ function getAllData(){
     };
   });
 
-  // Locked Months
-  const lkSh=getOrCreateSheet('確定月',['month','lockedAt']);
-  const lkRows=sheetToArray(lkSh);
-  const lockedMonths={};
-  lkRows.forEach(r=>{lockedMonths[normalizeMonthKey(r.month)]={lockedAt:Number(r.lockedAt)||0}});
+  // Locked Months（スタッフ別ロック { mk: { staffId: lockedAt } } を 設定シートにJSONで保持）
+  let lockedMonths={};
+  if(lockedMonthsJson){
+    try{lockedMonths=JSON.parse(lockedMonthsJson)||{}}catch(e){lockedMonths={}}
+  }else{
+    // 後方互換: 旧「確定月」シート（2列 month,lockedAt = 月ごとグローバル）から読む
+    const lkSh=getOrCreateSheet('確定月',['month','lockedAt']);
+    sheetToArray(lkSh).forEach(r=>{lockedMonths[normalizeMonthKey(r.month)]={lockedAt:Number(r.lockedAt)||0}});
+  }
 
   // Adjustments（報酬調整）
   const adjSh=getOrCreateSheet('報酬調整',['month','staffKey','enabled','amount','reason']);
@@ -212,7 +218,8 @@ function saveAllData(D){
     ['masterPin',String(D.config.masterPin).padStart(4,'0')],
     ['staff',JSON.stringify(D.config.staff||[])],
     ['prices',JSON.stringify(D.config.prices)],
-    ['snapshotVersion',String(D.snapshotVersion||2)]
+    ['snapshotVersion',String(D.snapshotVersion||2)],
+    ['lockedMonths',JSON.stringify(D.lockedMonths||{})]
   ];
   cfgSh.getRange(2,1,cfgData.length,2).setValues(cfgData);
 
@@ -245,19 +252,8 @@ function saveAllData(D){
     seSh.getRange(2,1,seData.length,4).setValues(seData);
   }
 
-  // Locked Months
-  const lkSh=getOrCreateSheet('確定月',['month','lockedAt']);
-  if(lkSh.getLastRow()>1)lkSh.getRange(2,1,lkSh.getLastRow()-1,2).clearContent();
-  const lkData=[];
-  if(D.lockedMonths){
-    Object.keys(D.lockedMonths).forEach(mk=>{
-      lkData.push([mk,D.lockedMonths[mk].lockedAt||0]);
-    });
-  }
-  if(lkData.length>0){
-    lkSh.getRange(2,1,lkData.length,1).setNumberFormat('@');
-    lkSh.getRange(2,1,lkData.length,2).setValues(lkData);
-  }
+  // Locked Months は 設定シートの 'lockedMonths' キー（JSON）に保存（上の cfgData 参照）。
+  // 旧「確定月」シートは後方互換のため読み取りフォールバックのみで使用し、ここでは書き換えない。
 
   // Adjustments
   const adjSh=getOrCreateSheet('報酬調整',['month','staffKey','enabled','amount','reason']);
