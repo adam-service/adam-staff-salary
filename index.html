@@ -415,9 +415,37 @@ function migrateData(d){
       if(!cr.plan)cr.plan=c.plan||'basic';
     });
   });
-  // 旧スナップショット機構は廃止（端末ローカル限定＆コース値引きを無視して古い金額に固定する不具合の原因）。
-  // 端末に残った古いスナップショットを消去し、確定月も常に最新のコース単価でライブ計算する。
-  d.lockedSnapshots={};
+  // 旧バージョンのスナップショット（フラット単価でコース値引きを無視した誤った値）を一度だけ破棄。
+  // 破棄後は backfillLockedSnapshots() が正しいコース単価ベースで確定月を凍結し直す。
+  // クラウド由来の正しいスナップショット（snapshotVersion>=2）は破棄しない。
+  if((d.snapshotVersion||0)<2){ d.lockedSnapshots={}; d.snapshotVersion=2; }
+}
+/* 確定済み月のうちスナップショット未生成のものを、最新のコース単価で正しく凍結する（一度だけ）。
+   クラウド同期で最新コースを取得した後に呼ぶこと（古いローカルデータで誤った値を凍結しないため）。
+   既存のスナップショットは上書きしない（＝過去の確定値は不変）。 */
+function backfillLockedSnapshots(){
+  if(!D.lockedMonths)return false;
+  if(!D.lockedSnapshots)D.lockedSnapshots={};
+  let changed=false;
+  Object.keys(D.lockedMonths).forEach(mk=>{
+    if(!D.lockedSnapshots[mk])D.lockedSnapshots[mk]={};
+    (D.clients||[]).forEach(c=>{
+      if(D.lockedSnapshots[mk][c.id])return; // 既存は不変
+      const calc=calcClientMonth(c.id,mk,{live:true});
+      if(calc.count>0){D.lockedSnapshots[mk][c.id]={...calc};changed=true;}
+    });
+  });
+  return changed;
+}
+/* ローカルにあってクラウドに無い確定スナップショットを保護的にマージ（既存は上書きしない）。 */
+function mergeSnapshotsInto(target,src){
+  if(!src||!target)return;
+  Object.keys(src).forEach(mk=>{
+    if(!target[mk])target[mk]={};
+    Object.keys(src[mk]).forEach(cid=>{
+      if(!target[mk][cid])target[mk][cid]=src[mk][cid];
+    });
+  });
 }
 /* 旧ロジック（セッション数25回閾値）で計算するpure function。
    既存の確定済み月のスナップショット生成専用。新規計算には使わない。 */
@@ -579,7 +607,12 @@ async function syncFromCloud(){
       if((!data.adjustments||Object.keys(data.adjustments).length===0)&&D.adjustments&&Object.keys(D.adjustments).length>0){
         data.adjustments=D.adjustments;
       }
-      D=data;saveLocal();render();alert('最新データを取得しました');
+      mergeSnapshotsInto(data.lockedSnapshots,D.lockedSnapshots);
+      D=data;
+      const bf=backfillLockedSnapshots();
+      saveLocal();render();
+      if(bf&&API_URL)saveToCloud();
+      alert('最新データを取得しました');
     }else if(localHasClients){
       alert('クラウドにゲストデータがありません。ローカルデータを維持し、クラウドへ保存します。');
       saveToCloud();render();
@@ -845,11 +878,15 @@ function getStandardReward(c,plan,source,promoted,unitPrice){
   return cfg.self||10000;
 }
 
-function calcClientMonth(clientId,mk){
+function calcClientMonth(clientId,mk,opts){
   const c=D.clients.find(x=>x.id===clientId);
   if(!c)return{count:0,reward:0,unitReward:0,sessionPrice:0,roomFee:0,revenue:0,service:null,source:null,isCustom:false,promoted:false,consumedTotal:0,adSessions:0,promotedSessions:0,promotedRate:0,ltvAtStart:0,ltvAfter:0};
-  // 確定月も常にライブ計算（コース単位の値引き単価・修正を正しく反映）。
-  // 旧スナップショット機構は端末ローカル限定＆コース値引きを無視するため廃止。
+  // 確定済み月は「確定時点のスナップショット」を返す。
+  // → 後からコース単価を変更・追加しても、過去の確定月の金額は変わらない（遡及しない）。
+  // opts.live=true のときだけ凍結を無視して最新データでライブ再計算する（スナップショット生成用）。
+  if(!(opts&&opts.live) && D.lockedMonths&&D.lockedMonths[mk] && D.lockedSnapshots&&D.lockedSnapshots[mk]&&D.lockedSnapshots[mk][clientId]){
+    return D.lockedSnapshots[mk][clientId];
+  }
   const s=getSessionData(clientId,mk);
   const count=s?s.count:0;
 
@@ -1502,11 +1539,12 @@ function resetSessionPrice(clientId){
   save();render();
 }
 function snapshotMonth(mk){
-  // 確定時の計算結果を保存（後でルール変更があっても金額が変わらないように）
+  // 確定時の計算結果を保存（後からコース単価を変えても確定月の金額が変わらないように）。
+  // opts.live=true で最新のコース単価ベースの正しい計算を凍結する。
   if(!D.lockedSnapshots)D.lockedSnapshots={};
   D.lockedSnapshots[mk]={};
   D.clients.forEach(c=>{
-    const calc=calcClientMonth(c.id,mk);
+    const calc=calcClientMonth(c.id,mk,{live:true});
     if(calc.count>0)D.lockedSnapshots[mk][c.id]={...calc};
   });
 }
@@ -1518,8 +1556,9 @@ function toggleLock(){
     delete D.lockedMonths[mk];
     // スナップショットは念のため保持（誤って解除→再確定で元に戻せるように）
   }else{
-    if(!confirm(monthDisplay(mk)+'を確定しますか？\n確定後は管理者のみ編集可能になります。'))return;
+    if(!confirm(monthDisplay(mk)+'を確定しますか？\n確定後は管理者のみ編集可能になります。\n（確定時点の報酬額が保存され、以後コース単価を変えても確定月は変わりません）'))return;
     D.lockedMonths[mk]={lockedAt:Date.now()};
+    snapshotMonth(mk);
   }
   save();render();
 }
@@ -2143,10 +2182,15 @@ renderStaffSelector();
             if(!data.sessions[mk][cid])data.sessions[mk][cid]=D.sessions[mk][cid];
           });
         });
+        // 確定スナップショット：クラウドを正とし、ローカル限定の凍結値だけ保護的にマージ
+        mergeSnapshotsInto(data.lockedSnapshots,D.lockedSnapshots);
         // ローカルに未送信のデータがあった場合はクラウドへ送信
         const hadUnsentLocal=(D.clients||[]).some(c=>!cloudClientIds.has(c.id));
-        D=data;saveLocal();
-        if(hadUnsentLocal&&API_URL)saveToCloud();
+        D=data;
+        // クラウドの最新コースを取得した後で、確定月の未凍結分を正しい単価で凍結（一度だけ）
+        const backfilled=backfillLockedSnapshots();
+        saveLocal();
+        if((hadUnsentLocal||backfilled)&&API_URL)saveToCloud();
       }else if(localHasClients){
         console.log('Cloud is empty but local has data — pushing local to cloud');
         saveToCloud();
@@ -2210,11 +2254,16 @@ async function autoSyncTick(){
         if(!data.sessions[mk][cid])data.sessions[mk][cid]=D.sessions[mk][cid];
       });
     });
+    // 確定スナップショット：クラウドを正とし、ローカル限定の凍結値だけ保護的にマージ
+    mergeSnapshotsInto(data.lockedSnapshots,D.lockedSnapshots);
     const lockOpen=document.getElementById('lockScreen') && !document.getElementById('lockScreen').classList.contains('hidden');
     if(lockOpen){
-      D=data;saveLocal();renderStaffSelector();
+      D=data;backfillLockedSnapshots();saveLocal();renderStaffSelector();
     }else{
-      D=data;saveLocal();
+      D=data;
+      const bf=backfillLockedSnapshots();
+      saveLocal();
+      if(bf&&API_URL)saveToCloud();
       if(currentStaffId&&!findStaff(currentStaffId)){
         alert('スタッフ情報が更新されました。再ログインしてください。');
         logout();return;
