@@ -1110,8 +1110,10 @@ function currentUnitReward(c){
   }
   return 0;
 }
-/* ゲストの累計LTV（全月の全セッションの単価合計＝累計売上） */
+/* ゲストの累計LTV（全月の全セッションの売上合計）。
+   無料モニターは売上0のためLTVも常に0。 */
 function getTotalLTV(c){
+  if(c.source==='monitor')return 0; // 無料モニターは売上0＝LTV0
   const consumed=getConsumedTotal(c.id);
   if(c.customEnabled)return (c.customSessionPrice||0)*consumed;
   let total=0;
