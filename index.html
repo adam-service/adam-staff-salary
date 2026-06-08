@@ -1123,6 +1123,7 @@ function getTotalLTV(c){
 /* LTVの視覚化バー。NOIC/resyncは全ゲスト「累計LTV＋¥432,000までの達成率」を、
    それ以外（aden/sub等）はLTV数値を表示する。 */
 function ltvBarHtml(c){
+  if(c.source==='monitor')return ''; // 無料モニターはLTV表示なし
   const threshold=D.config.ltvThreshold||432000;
   const ltv=getTotalLTV(c);
   const isNR=(c.service==='noic'||c.service==='resync');
