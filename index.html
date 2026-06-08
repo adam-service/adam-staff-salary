@@ -65,6 +65,13 @@ button,a,input,select,textarea,.svc-radio,.source-radio,.staff-selector button,.
 .client-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:6px}
 .client-name{font-size:15px;font-weight:700}
 .client-meta{font-size:11px;color:var(--text-light);margin-bottom:8px;line-height:1.6}
+.ltv-line{font-size:11px;color:var(--text-light);margin:2px 0 8px}
+.ltv-wrap{margin:4px 0 10px}
+.ltv-top{display:flex;justify-content:space-between;font-size:11px;color:var(--text-light)}
+.ltv-track{height:9px;background:#eef2f0;border-radius:6px;overflow:hidden;margin-top:3px}
+.ltv-fill{height:100%;background:linear-gradient(90deg,#5bb894,#2D7D5F);border-radius:6px;transition:width .4s}
+.ltv-fill.gold{background:linear-gradient(90deg,#f1d264,#d4ac0d)}
+.ltv-goal{font-size:10px;color:#b7791f;margin-top:3px;font-weight:600}
 .session-row{display:flex;align-items:center;justify-content:space-between}
 .session-controls{display:flex;align-items:center;gap:8px}
 .session-controls button{width:44px;height:44px;border-radius:50%;border:2px solid var(--border);background:#fff;font-size:22px;font-weight:700;color:var(--accent);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.15s}
@@ -1103,6 +1110,40 @@ function currentUnitReward(c){
   }
   return 0;
 }
+/* ゲストの累計LTV（全月の全セッションの単価合計＝累計売上） */
+function getTotalLTV(c){
+  const consumed=getConsumedTotal(c.id);
+  if(c.customEnabled)return (c.customSessionPrice||0)*consumed;
+  let total=0;
+  for(let i=1;i<=consumed;i++)total+=getUnitPriceForSession(c,i);
+  return total;
+}
+/* LTVの視覚化バー。広告経由のNOIC/resyncは「報酬が変わる閾値までの道のり」を、
+   それ以外はLTV数値を表示する。 */
+function ltvBarHtml(c){
+  const threshold=D.config.ltvThreshold||432000;
+  const ltv=getTotalLTV(c);
+  const hasPromotion=(c.service==='noic'||c.service==='resync')&&c.source==='ad'&&!c.customEnabled;
+  if(!hasPromotion){
+    return `<div class="ltv-line">累計LTV <b style="color:var(--text)">¥${ltv.toLocaleString()}</b></div>`;
+  }
+  const p=D.config.prices[c.service]||{};
+  const rates=(c.plan==='lite'&&p.lite)?p.lite:p;
+  const adRate=rates.ad||6000, selfRate=rates.self||10000;
+  if(ltv>=threshold){
+    return `<div class="ltv-wrap">
+      <div class="ltv-top"><span style="color:#b7791f;font-weight:700">⭐ 自力扱い達成！報酬 ¥${selfRate.toLocaleString()}/回</span><span style="color:#b7791f">LTV ¥${ltv.toLocaleString()}</span></div>
+      <div class="ltv-track"><div class="ltv-fill gold" style="width:100%"></div></div>
+    </div>`;
+  }
+  const pct=Math.max(2,Math.min(100,Math.round(ltv/threshold*100)));
+  const remain=threshold-ltv;
+  return `<div class="ltv-wrap">
+    <div class="ltv-top"><span>LTV ¥${ltv.toLocaleString()} / ¥${threshold.toLocaleString()}</span><span style="font-weight:700;color:var(--green)">${pct}%</span></div>
+    <div class="ltv-track"><div class="ltv-fill" style="width:${pct}%"></div></div>
+    <div class="ltv-goal">あと ¥${remain.toLocaleString()} で報酬 ¥${adRate.toLocaleString()} → ¥${selfRate.toLocaleString()} にアップ 🎯</div>
+  </div>`;
+}
 function renderInput(){
   const mk=currentMonth;
   const locked=isLocked(mk);
@@ -1193,15 +1234,12 @@ function renderInput(){
               ? `現コース単価 ¥${currentUnitPrice(c).toLocaleString()} − ルーム料 ¥${(currentUnitPrice(c)-currentUnitReward(c)).toLocaleString()} = ¥${currentUnitReward(c).toLocaleString()}/回<br><span style="color:var(--text-light)">今月は単価混在：`+Object.entries(r.priceTallies).map(([p,n])=>`¥${Number(p).toLocaleString()}×${n}回（報酬¥${Math.max(0,Number(p)-r.roomFee).toLocaleString()}）`).join(' ／ ')+`</span>`
               : `セッション料: ¥${r.sessionPrice.toLocaleString()} − ルーム料 ¥${r.roomFee.toLocaleString()} = ¥${r.unitReward.toLocaleString()}/回`)
             :isNoicResync?(()=>{
-              const ltvBefore=r.ltvAtStart||0;
-              const ltvAfter=r.ltvAfter||ltvBefore;
-              const threshold=D.config.ltvThreshold||432000;
-              const ltvBadge=ltvBefore>=threshold?`<span style="color:#d4ac0d;font-weight:600">⭐ 自力扱い昇格済（LTV ¥${ltvBefore.toLocaleString()}）</span>`:`累計LTV ¥${ltvBefore.toLocaleString()}／閾値 ¥${threshold.toLocaleString()}`;
               const mixedNote=r.promoted&&r.adSessions>0?`<br>今月: 通常${r.adSessions}回＋昇格${r.promotedSessions}回`:'';
-              return `報酬単価 ¥${r.unitReward.toLocaleString()}/回（${sourceLabel(c.source)}）<br>${ltvBadge}${mixedNote}`;
+              return `報酬単価 ¥${r.unitReward.toLocaleString()}/回（${sourceLabel(c.source)}）${mixedNote}`;
             })()
             :`報酬単価: ¥${r.unitReward.toLocaleString()}/回（${sourceLabel(c.source)}）`}
         </div>
+        ${ltvBarHtml(c)}
         <div class="session-row">
           <div class="session-controls">
             <button class="minus" onclick="changeCount('${c.id}',-1)" ${locked&&!isMaster?'disabled':''}>−</button>
@@ -1394,17 +1432,8 @@ function renderClients(){
       metaText='カスタム: 単価 ¥'+(c.customSessionPrice||0).toLocaleString()+' ／ 報酬 ¥'+(c.customReward||0).toLocaleString()+'/回';
     }else if(isRoom){metaText='セッション料 ¥'+(c.sessionPrice||0).toLocaleString()}
     else if(isNR){
-      // 累計LTVを表示
-      const ltv=getCumLTVBefore(c.id,currentMonth)+(D.sessions[currentMonth]?.[c.id]?D.sessions[currentMonth][c.id].count*(c.courses?.[0]?.unitPrice||c.sessionPrice||18000):0);
-      const totalLTV=Object.keys(D.sessions||{}).reduce((acc,mk)=>{
-        const s=D.sessions[mk]?.[c.id];return s?acc+s.count:acc;
-      },0);
-      // 累計LTVをコース単価を考慮して算出
-      let actualLTV=0;
-      for(let i=1;i<=totalLTV;i++)actualLTV+=getUnitPriceForSession(c,i);
-      const threshold=D.config.ltvThreshold||432000;
-      const ltvBadge=actualLTV>=threshold?'<span style="color:#d4ac0d;font-weight:600">⭐自力扱い昇格済</span>':'';
-      metaText=`累計 ${totalLTV}回 ／ 累計LTV ¥${actualLTV.toLocaleString()} ${ltvBadge}`;
+      const totalSessions=getConsumedTotal(c.id);
+      metaText=`累計 ${totalSessions}回`;
     }
     else{metaText='報酬単価 (詳細表示なし)'}
     html+=`<div style="padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="openEditClient('${c.id}')">
@@ -1415,6 +1444,7 @@ function renderClients(){
       <div style="font-size:12px;color:var(--text-light);margin-top:2px">
         ${metaText}
       </div>
+      ${ltvBarHtml(c)}
     </div>`;
   });
   html+='</div><button class="btn btn-outline" style="margin-top:12px" onclick="openAddClient()">＋ ゲストを追加</button>';
