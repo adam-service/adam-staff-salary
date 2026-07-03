@@ -1321,49 +1321,60 @@ function renderReport(){
     <div class="info-row" style="padding:10px 0;border-top:1px dashed var(--border);margin-top:6px"><span class="label" style="font-weight:700">セッション売上 合計</span><span class="val" style="font-size:16px;color:#b7791f">¥${calc.totalRevenue.toLocaleString()}</span></div>
     <div class="info-row" style="padding:12px 0;font-size:16px"><span class="label" style="font-size:14px;font-weight:700">合計報酬額</span><span class="val" style="font-size:22px;color:var(--accent)">¥${calc.totalReward.toLocaleString()}</span></div>
   </div>`;
-  // 報酬額の調整セクション（管理者のみ操作可。スタッフには調整後金額の表示のみ）
-  const adjStaffKey=isMaster?'__admin':(currentStaffId||'__none');
-  const adj=getAdjustment(mk,adjStaffKey);
-  const adjAmount=adj.enabled?(Number(adj.amount)||0):0;
-  const finalTotal=calc.totalReward+adjAmount;
+  // 報酬額の調整（スタッフ別・管理者のみ操作可。スタッフには自分の調整結果のみ表示）
   if(isMaster){
-    html+=`<div style="margin-top:16px;padding:14px;border:2px dashed var(--border);border-radius:10px;background:${adj.enabled?'#fef9e7':'#fafafa'}">
-      <div style="font-weight:700;margin-bottom:8px">⚙️ 報酬額の調整（イレギュラー対応）<span style="font-size:11px;color:var(--text-light);margin-left:6px">🔒 管理者のみ</span></div>
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:6px 0">
-        <input type="checkbox" id="adjEnabled" ${adj.enabled?'checked':''} onchange="toggleAdjustment('${mk}','${adjStaffKey}',this.checked)" style="width:18px;height:18px;cursor:pointer">
-        <span style="font-weight:600">報酬調整を適用する</span>
-      </label>
-      <div id="adjFields" class="${adj.enabled?'':'hidden'}" style="margin-top:10px">
-        <div style="font-size:11px;color:var(--text-light);margin-bottom:8px">プラスは加算、マイナスは減額。例: -5000 / +10000</div>
-        <div style="display:grid;grid-template-columns:1fr 2fr;gap:10px;margin-bottom:10px">
-          <div>
-            <label style="font-size:12px;display:block;margin-bottom:4px">調整額（円）</label>
-            <input type="number" id="adjAmount" value="${adj.amount||0}" placeholder="例: -5000" style="width:100%">
-          </div>
-          <div>
-            <label style="font-size:12px;display:block;margin-bottom:4px">理由</label>
-            <input type="text" id="adjReason" value="${esc(adj.reason||'')}" placeholder="例: 諸事情により減額" style="width:100%">
-          </div>
+    const staffList=D.config.staff||[];
+    html+=`<div style="margin-top:16px;padding:14px;border:2px dashed var(--border);border-radius:10px;background:#fafafa">
+      <div style="font-weight:700;margin-bottom:4px">⚙️ 報酬額の調整（スタッフ別・イレギュラー対応）<span style="font-size:11px;color:var(--text-light);margin-left:6px">🔒 管理者のみ</span></div>
+      <div style="font-size:11px;color:var(--text-light);margin-bottom:10px">${monthDisplay(mk)}／スタッフごとに調整できます。プラスは加算、マイナスは減額（例: -5000 / +10000）</div>`;
+    let grand=0;
+    staffList.forEach(st=>{
+      const staffClients=D.clients.filter(c=>c.staffId===st.id);
+      const base=calcMonth(mk,staffClients).totalReward;
+      const a=getAdjustment(mk,st.id);
+      const amt=a.enabled?(Number(a.amount)||0):0;
+      const finalT=base+amt;
+      grand+=finalT;
+      html+=`<div style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;background:${a.enabled?'#fef9e7':'#fff'}">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-weight:700">${esc(st.name)}</span>
+          <span style="font-size:13px">報酬 <b style="color:var(--green)">¥${base.toLocaleString()}</b></span>
         </div>
-        <button class="btn btn-primary" onclick="saveAdjustment('${mk}','${adjStaffKey}')">調整を保存</button>
-      </div>
-      ${adj.enabled?`
-      <div style="margin-top:14px;padding:10px;background:#fff;border-radius:8px;border:1px solid var(--border)">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:6px 0;font-size:13px">
+          <input type="checkbox" ${a.enabled?'checked':''} onchange="toggleAdjustment('${mk}','${st.id}',this.checked)" style="width:16px;height:16px;cursor:pointer">
+          <span>調整を適用する</span>
+        </label>
+        <div class="${a.enabled?'':'hidden'}" style="margin-top:6px">
+          <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px;margin-bottom:8px">
+            <div><label style="font-size:11px;display:block;margin-bottom:3px">調整額（円）</label><input type="number" id="adjAmount_${st.id}" value="${a.amount||0}" placeholder="例: -5000" style="width:100%"></div>
+            <div><label style="font-size:11px;display:block;margin-bottom:3px">理由</label><input type="text" id="adjReason_${st.id}" value="${esc(a.reason||'')}" placeholder="例: 諸事情により減額" style="width:100%"></div>
+          </div>
+          <button class="btn btn-primary" onclick="saveAdjustment('${mk}','${st.id}')">${esc(st.name)}の調整を保存</button>
+        </div>
+        ${a.enabled?`<div style="margin-top:8px;padding:8px;background:#fff;border-radius:6px;border:1px solid var(--border);font-size:13px">
+          <div style="display:flex;justify-content:space-between"><span>調整前</span><span>¥${base.toLocaleString()}</span></div>
+          <div style="display:flex;justify-content:space-between"><span>調整額</span><span style="color:${amt>=0?'var(--green)':'#c0392b'}">${amt>=0?'+':''}¥${amt.toLocaleString()}</span></div>
+          ${a.reason?`<div style="font-size:11px;color:var(--text-light);margin-top:4px">理由: ${esc(a.reason)}</div>`:''}
+          <div style="display:flex;justify-content:space-between;font-weight:700;color:var(--accent);margin-top:6px;padding-top:6px;border-top:1px solid var(--border)"><span>調整後支給額</span><span>¥${finalT.toLocaleString()}</span></div>
+        </div>`:''}
+      </div>`;
+    });
+    html+=`<div style="display:flex;justify-content:space-between;font-weight:700;font-size:15px;padding:10px 4px 2px;border-top:2px solid var(--border);margin-top:4px"><span>調整後 総支給額</span><span style="color:var(--accent)">¥${grand.toLocaleString()}</span></div>
+    </div>`;
+  }else{
+    // スタッフには、管理者が自分に対して調整した結果のみを表示（編集不可）
+    const a=getAdjustment(mk,currentStaffId||'__none');
+    if(a.enabled){
+      const amt=Number(a.amount)||0;
+      const finalT=calc.totalReward+amt;
+      html+=`<div style="margin-top:16px;padding:14px;border:1px solid var(--border);border-radius:10px;background:#fff">
+        <div style="font-weight:700;margin-bottom:8px;font-size:13px">📝 管理者調整の適用結果</div>
         <div style="font-size:13px;display:flex;justify-content:space-between"><span>調整前</span><span>¥${calc.totalReward.toLocaleString()}</span></div>
-        <div style="font-size:13px;display:flex;justify-content:space-between"><span>調整額</span><span style="color:${adjAmount>=0?'var(--green)':'#c0392b'}">${adjAmount>=0?'+':''}¥${adjAmount.toLocaleString()}</span></div>
-        ${adj.reason?`<div style="font-size:11px;color:var(--text-light);margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)">理由: ${esc(adj.reason)}</div>`:''}
-        <div style="font-size:18px;font-weight:700;color:var(--accent);margin-top:10px;padding-top:10px;border-top:2px solid var(--border);display:flex;justify-content:space-between"><span style="font-size:14px">調整後支給額</span><span>¥${finalTotal.toLocaleString()}</span></div>
-      </div>`:''}
-    </div>`;
-  }else if(adj.enabled){
-    // スタッフには、管理者が調整した結果のみを表示（編集不可）
-    html+=`<div style="margin-top:16px;padding:14px;border:1px solid var(--border);border-radius:10px;background:#fff">
-      <div style="font-weight:700;margin-bottom:8px;font-size:13px">📝 管理者調整の適用結果</div>
-      <div style="font-size:13px;display:flex;justify-content:space-between"><span>調整前</span><span>¥${calc.totalReward.toLocaleString()}</span></div>
-      <div style="font-size:13px;display:flex;justify-content:space-between"><span>調整額</span><span style="color:${adjAmount>=0?'var(--green)':'#c0392b'}">${adjAmount>=0?'+':''}¥${adjAmount.toLocaleString()}</span></div>
-      ${adj.reason?`<div style="font-size:11px;color:var(--text-light);margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)">理由: ${esc(adj.reason)}</div>`:''}
-      <div style="font-size:18px;font-weight:700;color:var(--accent);margin-top:10px;padding-top:10px;border-top:2px solid var(--border);display:flex;justify-content:space-between"><span style="font-size:14px">調整後支給額</span><span>¥${finalTotal.toLocaleString()}</span></div>
-    </div>`;
+        <div style="font-size:13px;display:flex;justify-content:space-between"><span>調整額</span><span style="color:${amt>=0?'var(--green)':'#c0392b'}">${amt>=0?'+':''}¥${amt.toLocaleString()}</span></div>
+        ${a.reason?`<div style="font-size:11px;color:var(--text-light);margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)">理由: ${esc(a.reason)}</div>`:''}
+        <div style="font-size:18px;font-weight:700;color:var(--accent);margin-top:10px;padding-top:10px;border-top:2px solid var(--border);display:flex;justify-content:space-between"><span style="font-size:14px">調整後支給額</span><span>¥${finalT.toLocaleString()}</span></div>
+      </div>`;
+    }
   }
   html+=`</div>`;
   el.innerHTML=html;
@@ -1380,8 +1391,8 @@ function toggleAdjustment(mk,staffKey,enabled){
   // 不正防止: 管理者以外は報酬調整不可
   if(!isMaster){alert('報酬調整は管理者のみ可能です');render();return}
   const adj=getAdjustment(mk,staffKey);
-  const inpA=document.getElementById('adjAmount');
-  const inpR=document.getElementById('adjReason');
+  const inpA=document.getElementById('adjAmount_'+staffKey);
+  const inpR=document.getElementById('adjReason_'+staffKey);
   if(inpA)adj.amount=parseInt(inpA.value)||0;
   if(inpR)adj.reason=inpR.value||'';
   adj.enabled=!!enabled;
@@ -1391,8 +1402,10 @@ function saveAdjustment(mk,staffKey){
   // 不正防止: 管理者以外は報酬調整不可
   if(!isMaster){alert('報酬調整は管理者のみ可能です');return}
   const adj=getAdjustment(mk,staffKey);
-  adj.amount=parseInt(document.getElementById('adjAmount').value)||0;
-  adj.reason=document.getElementById('adjReason').value||'';
+  const inpA=document.getElementById('adjAmount_'+staffKey);
+  const inpR=document.getElementById('adjReason_'+staffKey);
+  if(inpA)adj.amount=parseInt(inpA.value)||0;
+  if(inpR)adj.reason=inpR.value||'';
   adj.enabled=true;
   save();render();
   // 軽い通知
