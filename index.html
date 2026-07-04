@@ -388,6 +388,7 @@ function migrateData(d){
   if(d.config.ltvThreshold==null)d.config.ltvThreshold=LTV_THRESHOLD_DEFAULT;
   if(!d.lockedMonths)d.lockedMonths={};
   if(!d.lockedSnapshots)d.lockedSnapshots={};
+  if(!d.deletedClients)d.deletedClients={}; // 削除記録（tombstone）: {clientId: deletedAt}
   if(!d.clients)d.clients=[];
   if(!d.sessions)d.sessions={};
   function fixMonthKeys(obj){
@@ -635,6 +636,7 @@ async function syncFromCloud(){
         data.adjustments=D.adjustments;
       }
       mergeSnapshotsInto(data.lockedSnapshots,D.lockedSnapshots);
+      applyDeletions(data); // 削除記録を統合＋削除済みゲストを除去（復活防止）
       D=data;
       const bf=backfillLockedSnapshots();
       saveLocal();render();
@@ -2188,9 +2190,21 @@ function saveEditClient(id){
 function deleteClient(id){
   if(!isMaster){alert('ゲストの削除は管理者のみ可能です');return}
   if(!confirm('このゲストを削除しますか？\nセッションデータも削除されます。'))return;
+  // 削除記録（tombstone）を残す＝同期時に別端末から復活しないようにする
+  if(!D.deletedClients)D.deletedClients={};
+  D.deletedClients[id]=Date.now();
   D.clients=D.clients.filter(x=>x.id!==id);
   Object.keys(D.sessions).forEach(mk=>{if(D.sessions[mk][id])delete D.sessions[mk][id]});
+  Object.keys(D.lockedSnapshots||{}).forEach(mk=>{if(D.lockedSnapshots[mk]&&D.lockedSnapshots[mk][id])delete D.lockedSnapshots[mk][id]});
   save();closeModal();render();
+}
+/* クラウド/ローカルの削除記録を統合し、削除済みゲストをdataから除去する。戻り値=統合後の削除記録 */
+function applyDeletions(data){
+  if(!data.deletedClients)data.deletedClients={};
+  if(D&&D.deletedClients)Object.keys(D.deletedClients).forEach(id=>{if(!data.deletedClients[id])data.deletedClients[id]=D.deletedClients[id];});
+  const del=data.deletedClients;
+  if(data.clients)data.clients=data.clients.filter(c=>!del[c.id]); // 削除済みはクラウド側にあっても除去
+  return del;
 }
 
 /* ===== Export/Import ===== */
@@ -2281,19 +2295,21 @@ renderStaffSelector();
             });
           });
         }
-        // ローカルにあってクラウドに無いゲスト・セッションをマージ（未送信の変更を保護）
+        // 削除記録を統合し、削除済みゲストはクラウド側からも除去（復活防止）
+        const del=applyDeletions(data);
+        // ローカルにあってクラウドに無いゲスト・セッションをマージ（未送信の変更を保護。削除済みは復活させない）
         const cloudClientIds=new Set(data.clients.map(c=>c.id));
-        (D.clients||[]).forEach(c=>{if(!cloudClientIds.has(c.id))data.clients.push(c)});
+        (D.clients||[]).forEach(c=>{if(!cloudClientIds.has(c.id)&&!del[c.id])data.clients.push(c)});
         Object.keys(D.sessions||{}).forEach(mk=>{
           if(!data.sessions[mk])data.sessions[mk]={};
           Object.keys(D.sessions[mk]).forEach(cid=>{
-            if(!data.sessions[mk][cid])data.sessions[mk][cid]=D.sessions[mk][cid];
+            if(!data.sessions[mk][cid]&&!del[cid])data.sessions[mk][cid]=D.sessions[mk][cid];
           });
         });
         // 確定スナップショット：クラウドを正とし、ローカル限定の凍結値だけ保護的にマージ
         mergeSnapshotsInto(data.lockedSnapshots,D.lockedSnapshots);
-        // ローカルに未送信のデータがあった場合はクラウドへ送信
-        const hadUnsentLocal=(D.clients||[]).some(c=>!cloudClientIds.has(c.id));
+        // ローカルに未送信のデータがあった場合はクラウドへ送信（削除済みは除外）
+        const hadUnsentLocal=(D.clients||[]).some(c=>!cloudClientIds.has(c.id)&&!del[c.id]);
         D=data;
         // クラウドの最新コースを取得した後で、確定月の未凍結分を正しい単価で凍結（一度だけ）
         const backfilled=backfillLockedSnapshots();
@@ -2350,16 +2366,18 @@ async function autoSyncTick(){
         });
       });
     }
-    // ローカルにあってクラウドに無いゲストはマージ（ローカル優先）
+    // 削除記録を統合し、削除済みゲストはクラウド側からも除去（復活防止）
+    const del=applyDeletions(data);
+    // ローカルにあってクラウドに無いゲストはマージ（ローカル優先。削除済みは復活させない）
     const cloudClientIds=new Set((data.clients||[]).map(c=>c.id));
     (D.clients||[]).forEach(c=>{
-      if(!cloudClientIds.has(c.id))data.clients.push(c);
+      if(!cloudClientIds.has(c.id)&&!del[c.id])data.clients.push(c);
     });
-    // ローカルにあってクラウドに無いセッション数もマージ
+    // ローカルにあってクラウドに無いセッション数もマージ（削除済みは除外）
     Object.keys(D.sessions||{}).forEach(mk=>{
       if(!data.sessions[mk])data.sessions[mk]={};
       Object.keys(D.sessions[mk]).forEach(cid=>{
-        if(!data.sessions[mk][cid])data.sessions[mk][cid]=D.sessions[mk][cid];
+        if(!data.sessions[mk][cid]&&!del[cid])data.sessions[mk][cid]=D.sessions[mk][cid];
       });
     });
     // 確定スナップショット：クラウドを正とし、ローカル限定の凍結値だけ保護的にマージ
