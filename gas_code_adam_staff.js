@@ -117,6 +117,7 @@ function getAllData(){
   let legacyTrainerPin=null,legacyTrainerName=null;
   let snapshotVersion=0;
   let lockedMonthsJson=null;
+  let deletedClientsJson=null;
   cfgRows.forEach(r=>{
     if(r.key==='masterPin')config.masterPin=String(r.value).padStart(4,'0');
     else if(r.key==='trainerPin')legacyTrainerPin=String(r.value).padStart(4,'0');
@@ -125,6 +126,7 @@ function getAllData(){
     else if(r.key==='prices')try{config.prices=JSON.parse(r.value)}catch(e){}
     else if(r.key==='snapshotVersion')snapshotVersion=Number(r.value)||0;
     else if(r.key==='lockedMonths')lockedMonthsJson=r.value;
+    else if(r.key==='deletedClients')deletedClientsJson=r.value;
   });
   if((legacyTrainerName||legacyTrainerPin)&&config.staff.length===0){
     config.staff.push({
@@ -205,7 +207,12 @@ function getAllData(){
     }catch(e){}
   });
 
-  return{config,clients,sessions,lockedMonths,adjustments,lockedSnapshots,snapshotVersion};
+  // 削除記録（tombstone）: {clientId: deletedAt}。削除済みゲストは返却clientsからも除外
+  let deletedClients={};
+  if(deletedClientsJson){try{deletedClients=JSON.parse(deletedClientsJson)||{}}catch(e){deletedClients={}}}
+  const cleanClients=clients.filter(c=>!deletedClients[c.id]);
+
+  return{config,clients:cleanClients,sessions,lockedMonths,adjustments,lockedSnapshots,snapshotVersion,deletedClients};
 }
 
 /* ===== Save All Data ===== */
@@ -219,15 +226,18 @@ function saveAllData(D){
     ['staff',JSON.stringify(D.config.staff||[])],
     ['prices',JSON.stringify(D.config.prices)],
     ['snapshotVersion',String(D.snapshotVersion||2)],
-    ['lockedMonths',JSON.stringify(D.lockedMonths||{})]
+    ['lockedMonths',JSON.stringify(D.lockedMonths||{})],
+    ['deletedClients',JSON.stringify(D.deletedClients||{})]
   ];
   cfgSh.getRange(2,1,cfgData.length,2).setValues(cfgData);
 
   // Clients
   const clSh=getOrCreateSheet('ゲスト',['id','name','service','source','sessionPrice','courses','createdAt','staffId','customEnabled','customSessionPrice','customReward']);
   if(clSh.getLastRow()>1)clSh.getRange(2,1,clSh.getLastRow()-1,11).clearContent();
-  if(D.clients&&D.clients.length>0){
-    const clData=D.clients.map(c=>[
+  const _del=D.deletedClients||{};
+  const _clients=(D.clients||[]).filter(c=>!_del[c.id]); // 削除済みは書き込まない
+  if(_clients.length>0){
+    const clData=_clients.map(c=>[
       c.id,c.name,c.service,c.source||'',c.sessionPrice||0,
       JSON.stringify(c.courses||[]),c.createdAt||0,c.staffId||'',
       c.customEnabled?true:false,c.customSessionPrice||0,c.customReward||0
