@@ -26,7 +26,7 @@ button,a,input,select,textarea,.svc-radio,.source-radio,.staff-selector button,.
 .month-nav{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:10px}
 .month-nav button{background:rgba(255,255,255,.2);border:none;color:#fff;width:36px;height:36px;border-radius:50%;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center}
 .month-nav button:active{background:rgba(255,255,255,.35)}
-.month-nav .month-label{font-size:18px;font-weight:700;min-width:140px;text-align:center}
+.month-nav .month-label{font-size:22px;font-weight:800;text-align:center;letter-spacing:.5px}
 .tabs{position:sticky;top:78px;z-index:99;display:flex;background:#fff;border-bottom:2px solid var(--border);box-shadow:0 1px 4px rgba(0,0,0,.05)}
 .tabs button{flex:1;padding:12px 4px;border:none;background:none;font-size:13px;font-weight:600;color:var(--text-light);cursor:pointer;position:relative;transition:.2s}
 .tabs button.active{color:var(--accent)}
@@ -252,7 +252,10 @@ label{display:block;font-size:12px;font-weight:600;color:var(--text-light);margi
   <div class="sync-status"><span class="sync-dot offline" id="syncDot"></span><span class="sync-text" id="syncText">ローカル</span></div>
   <div class="month-nav">
     <button onclick="changeMonth(-1)">&#8249;</button>
-    <div class="month-label" id="monthLabel"></div>
+    <div style="text-align:center;min-width:150px">
+      <div class="month-label" id="monthLabel"></div>
+      <div id="monthStatus" style="font-size:11px;font-weight:700;min-height:14px;margin-top:2px"></div>
+    </div>
     <button onclick="changeMonth(1)">&#8250;</button>
   </div>
 </div>
@@ -804,6 +807,23 @@ async function logout(){
 /* ===== Month Nav ===== */
 function monthKey(d){return d.toISOString().slice(0,7)}
 function monthDisplay(mk){const[y,m]=mk.split('-');return y+'年'+parseInt(m)+'月'}
+/* ローカル時間基準の年月キー（UTCずれ防止） */
+function localYm(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');}
+function thisMonthKey(){return localYm(new Date());}
+function prevMonthKey(){const n=new Date();return localYm(new Date(n.getFullYear(),n.getMonth()-1,1));}
+/* 月ラベル＋「今月／前月」状態表示を更新（どの月を編集中か一目で分かるように） */
+function updateMonthLabel(){
+  const lbl=document.getElementById('monthLabel');
+  if(lbl)lbl.textContent=monthDisplay(currentMonth);
+  const st=document.getElementById('monthStatus');
+  if(st){
+    const cur=thisMonthKey(), prev=prevMonthKey();
+    if(currentMonth===cur){st.textContent='🔵 今月（進行中）— 前月分は ‹ で';st.style.color='#ffe082';}
+    else if(currentMonth===prev){st.textContent='✅ 前月（入力対象）';st.style.color='#c8f7dc';}
+    else if(currentMonth>cur){st.textContent='⚠️ 未来の月';st.style.color='#ffab91';}
+    else{st.textContent='過去の月';st.style.color='rgba(255,255,255,.8)';}
+  }
+}
 function changeMonth(delta){
   const d=new Date(currentMonth+'-01');
   d.setMonth(d.getMonth()+delta);
@@ -1070,7 +1090,7 @@ function calcMonth(mk,clientList){
 
 /* ===== Render ===== */
 function render(){
-  document.getElementById('monthLabel').textContent=monthDisplay(currentMonth);
+  updateMonthLabel();
   renderInput();renderReport();renderClients();
   if(isMaster)renderSettings();
 }
@@ -2267,8 +2287,9 @@ function initApp(){
   render();
 }
 load();
-currentMonth=monthKey(new Date());
-document.getElementById('monthLabel').textContent=monthDisplay(currentMonth);
+// 起動時は「前月」を開く（運用: 月初に前月分を入力するため。当月へは › で切替可能）
+currentMonth=prevMonthKey();
+updateMonthLabel();
 renderStaffSelector();
 
 (async function boot(){
