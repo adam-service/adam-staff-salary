@@ -252,9 +252,9 @@ label{display:block;font-size:12px;font-weight:600;color:var(--text-light);margi
   <div class="sync-status"><span class="sync-dot offline" id="syncDot"></span><span class="sync-text" id="syncText">ローカル</span></div>
   <div class="month-nav">
     <button onclick="changeMonth(-1)">&#8249;</button>
-    <div style="text-align:center;width:180px">
+    <div style="text-align:center;min-width:150px">
       <div class="month-label" id="monthLabel"></div>
-      <div id="monthStatus" style="font-size:11px;font-weight:700;line-height:1.5;min-height:16px;margin-top:2px;white-space:normal"></div>
+      <div id="monthStatus" style="font-size:11px;font-weight:700;min-height:14px;margin-top:2px"></div>
     </div>
     <button onclick="changeMonth(1)">&#8250;</button>
   </div>
@@ -583,7 +583,7 @@ async function saveToCloud(retries){
     const res=await fetch(API_URL+'?action=saveData',{
       method:'POST',
       headers:{'Content-Type':'text/plain;charset=utf-8'},
-      body:JSON.stringify(D),
+      body:JSON.stringify(buildCloudPayload()),
       redirect:'follow'
     });
     let result;
@@ -602,6 +602,7 @@ async function saveToCloud(retries){
       }
       throw new Error(result.error);
     }
+    pendingLockRemoval=false;
     updateSyncStatus('online','保存完了');
     setTimeout(()=>updateSyncStatus('online','接続済み'),2000);
     return true;
@@ -613,6 +614,17 @@ async function saveToCloud(retries){
     if(retries>0)setTimeout(()=>saveToCloud(retries-1),5000);
     return false;
   }
+}
+/* 確定解除（管理者操作）のときだけ、サーバー側にロック削除を許可させるフラグ */
+let pendingLockRemoval=false;
+/* クラウドへ送るペイロード。
+   scopeStaffId= スタッフモードの保存であることをサーバーに伝える識別子。
+   サーバーは他スタッフ担当ゲストのデータを上書きしなくなる（古い端末による巻き戻し防止）。 */
+function buildCloudPayload(){
+  return Object.assign({},D,{
+    scopeStaffId:isMaster?null:(currentStaffId||null),
+    allowLockRemoval:pendingLockRemoval
+  });
 }
 let _lastLocalSaveAt=0;
 function save(){
@@ -811,21 +823,17 @@ function monthDisplay(mk){const[y,m]=mk.split('-');return y+'年'+parseInt(m)+'�
 function localYm(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');}
 function thisMonthKey(){return localYm(new Date());}
 function prevMonthKey(){const n=new Date();return localYm(new Date(n.getFullYear(),n.getMonth()-1,1));}
-/* 月ラベル＋「支給月」表示を更新（表示中の月のセッションが、いつ支給されるかを示す。対象月には✅） */
+/* 月ラベル＋「今月／前月」状態表示を更新（どの月を編集中か一目で分かるように） */
 function updateMonthLabel(){
   const lbl=document.getElementById('monthLabel');
   if(lbl)lbl.textContent=monthDisplay(currentMonth);
   const st=document.getElementById('monthStatus');
   if(st){
     const cur=thisMonthKey(), prev=prevMonthKey();
-    const [dy,dm]=currentMonth.split('-').map(Number);
-    const pd=new Date(dy,dm,1); /* dmは1-12・Dateのmonth引数は0始まりなので+1され翌月になる */
-    const py=pd.getFullYear(), pm=pd.getMonth()+1;
-    const payLabel=(py===dy?'':py+'年')+pm+'月支給分';
-    if(currentMonth===prev){st.textContent='✅ '+payLabel;st.style.color='#c8f7dc';}
-    else if(currentMonth===cur){st.textContent='🔵 '+payLabel+'（集計中）';st.style.color='#ffe082';}
-    else if(currentMonth>cur){st.textContent='⚠️ '+payLabel+'（未来）';st.style.color='#ffab91';}
-    else{st.textContent='📁 '+payLabel+'（確定済み）';st.style.color='rgba(255,255,255,.8)';}
+    if(currentMonth===cur){st.textContent='🔵 今月（進行中）— 前月分は ‹ で';st.style.color='#ffe082';}
+    else if(currentMonth===prev){st.textContent='✅ 前月（入力対象）';st.style.color='#c8f7dc';}
+    else if(currentMonth>cur){st.textContent='⚠️ 未来の月';st.style.color='#ffab91';}
+    else{st.textContent='過去の月';st.style.color='rgba(255,255,255,.8)';}
   }
 }
 function changeMonth(delta){
@@ -1606,8 +1614,7 @@ function resetSessionCount(clientId){
   if(!confirm('このゲストの今月のセッション回数を0にリセットしますか？'))return;
   const mk=currentMonth;
   if(D.sessions[mk]&&D.sessions[mk][clientId]){
-    delete D.sessions[mk][clientId];
-    if(Object.keys(D.sessions[mk]).length===0)delete D.sessions[mk];
+    D.sessions[mk][clientId].count=0;
   }
   save();render();
 }
@@ -1630,10 +1637,6 @@ function changeCount(clientId,delta){
     }
   }
   s.count=newCount;
-  if(s.count===0&&s.sessionPriceOverride==null){
-    delete D.sessions[mk][clientId];
-    if(Object.keys(D.sessions[mk]).length===0)delete D.sessions[mk];
-  }
   save();render();
 }
 function changeSessionPrice(clientId,val){
@@ -1654,10 +1657,6 @@ function resetSessionPrice(clientId){
   const mk=currentMonth;
   const s=ensureSession(clientId,mk);
   s.sessionPriceOverride=null;
-  if(s.count===0){
-    delete D.sessions[mk][clientId];
-    if(Object.keys(D.sessions[mk]).length===0)delete D.sessions[mk];
-  }
   save();render();
 }
 function snapshotStaffMonth(mk,staffId){
@@ -1698,6 +1697,7 @@ function unlockStaffMonth(mk,staffId){
     (D.clients||[]).forEach(c=>{ if(c.staffId===staffId) delete D.lockedSnapshots[mk][c.id]; });
     if(Object.keys(D.lockedSnapshots[mk]).length===0)delete D.lockedSnapshots[mk];
   }
+  pendingLockRemoval=true; // サーバー側のロック削除を1回だけ許可
   save();render();
 }
 function updateConfig(key,val){
