@@ -637,6 +637,23 @@ function diffData(base,cur){
   return ch;
 }
 function isEmptyChanges(ch){return !ch||Object.keys(ch).length===0}
+/* スタッフモードで送られた報酬調整を正規化する。
+ * 承認欄（enabled/amount/reason）は既存のまま、申請(items)は新規＝pending、承認済み/却下済みは編集不可、承認済みは削除不可 */
+function _staffAdjustment(cur,v){
+  cur=cur||{enabled:false,amount:0,reason:'',items:[]};
+  const curItems={};(cur.items||[]).forEach(i=>{if(i&&i.id)curItems[i.id]=i});
+  const out={enabled:!!cur.enabled,amount:Number(cur.amount)||0,reason:cur.reason||'',items:[]};
+  const seen={};
+  ((v&&v.items)||[]).forEach(i=>{
+    if(!i||!i.id||seen[i.id])return;
+    const c=curItems[i.id];
+    if(c&&c.status!=='pending')out.items.push(c);
+    else out.items.push(Object.assign({},i,{status:'pending'}));
+    seen[i.id]=1;
+  });
+  Object.keys(curItems).forEach(id=>{if(!seen[id]&&curItems[id].status==='approved')out.items.push(curItems[id])});
+  return out;
+}
 /* state を破壊的に更新して返す。
  * opts.lockedBase … 不変判定に使う確定ロック（適用前のサーバー値）。確定済み(月×担当)のセッションは変更しない
  * opts.scope      … スタッフID。指定時は他スタッフ担当ゲストの変更と設定変更を無視（スタッフモードの保存） */
@@ -685,11 +702,24 @@ function applyChangesTo(state,ch,opts){
   ['lockedMonths','lockedSnapshots','adjustments'].forEach(key=>{
     Object.keys(ch[key]||{}).forEach(mk=>{
       Object.keys(ch[key][mk]||{}).forEach(k=>{
-        const v=ch[key][mk][k];
+        let v=ch[key][mk][k];
         if(scope){
           if(key==='lockedMonths'&&k!==scope)return;
           if(key==='adjustments'&&k!==scope)return;
           if(key==='lockedSnapshots'&&staffOf[k]!==undefined&&staffOf[k]!==scope)return;
+        }
+        if(key==='adjustments'){
+          const cur=state.adjustments[mk]&&state.adjustments[mk][k];
+          if(scope){
+            // スタッフ本人：承認欄と各申請の status は変えられない。承認済みは消せない
+            if(v===null){if(cur&&(cur.enabled||(cur.items||[]).some(i=>i&&i.status==='approved')))return;}
+            else v=_staffAdjustment(cur,v);
+          }else if(v!==null&&cur){
+            // 管理者：スタッフが同時に追加した申請を取りこぼさない（申請は却下で消す。削除はしない）
+            const have={};(v.items||[]).forEach(i=>{if(i&&i.id)have[i.id]=1});
+            const missing=(cur.items||[]).filter(i=>i&&i.id&&!have[i.id]);
+            if(missing.length)v=Object.assign({},v,{items:(v.items||[]).concat(missing)});
+          }
         }
         if(!state[key][mk])state[key][mk]={};
         if(v===null)delete state[key][mk][k];else state[key][mk][k]=v;
@@ -1502,12 +1532,11 @@ function renderReport(){
   const mk=currentMonth;
   const calc=calcMonth(mk);
   const el=document.getElementById('tabReport');
-  if(calc.details.length===0){
-    el.innerHTML=`<div class="card"><div class="card-title">📄 ${monthDisplay(mk)} レポート</div><div class="empty-state"><div class="icon">📋</div><p>この月のセッションデータがありません</p></div></div>`;
-    return;
-  }
   const services=['aden','sub-svc','noic','resync'];
   let html=`<div class="card"><div class="card-title">📄 ${monthDisplay(mk)} レポート</div>`;
+  if(calc.details.length===0){
+    html+=`<div class="empty-state"><div class="icon">📋</div><p>この月のセッションデータがありません</p></div>`;
+  }
   services.forEach(svc=>{
     const list=calc.details.filter(d=>d.client.service===svc);
     if(list.length===0)return;
@@ -1558,14 +1587,21 @@ function renderReport(){
       const staffClients=D.clients.filter(c=>c.staffId===st.id);
       const base=calcMonth(mk,staffClients).totalReward;
       const a=getAdjustment(mk,st.id);
-      const amt=a.enabled?(Number(a.amount)||0):0;
-      const finalT=base+amt;
+      const at=adjTotals(mk,st.id);
+      const amt=at.manual;
+      const finalT=base+at.total;
       grand+=finalT;
-      html+=`<div style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;background:${a.enabled?'#fef9e7':'#fff'}">
+      const pendingN=a.items.filter(i=>i.status==='pending').length;
+      html+=`<div style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;background:${(a.enabled||at.approved)?'#fef9e7':'#fff'}">
         <div style="display:flex;justify-content:space-between;align-items:center">
-          <span style="font-weight:700">${esc(st.name)}</span>
+          <span style="font-weight:700">${esc(st.name)}${pendingN?` <span style="font-size:11px;background:#c0392b;color:#fff;border-radius:10px;padding:1px 8px;margin-left:6px">申請 ${pendingN}件</span>`:''}</span>
           <span style="font-size:13px">報酬 <b style="color:var(--green)">¥${base.toLocaleString()}</b></span>
         </div>
+        ${a.items.length?`<div style="margin:8px 0;padding:8px;background:#fff;border-radius:6px;border:1px solid var(--border)">
+          <div style="font-size:12px;font-weight:700;margin-bottom:6px">🙋 スタッフからの申請（イレギュラー対応）</div>
+          ${a.items.map(i=>adjItemRow(mk,st.id,i,true)).join('')}
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)"><span>承認済み合計</span><span style="font-weight:700;color:var(--green)">${at.approved>=0?'+':''}¥${at.approved.toLocaleString()}</span></div>
+        </div>`:''}
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:6px 0;font-size:13px">
           <input type="checkbox" ${a.enabled?'checked':''} onchange="toggleAdjustment('${mk}','${st.id}',this.checked)" style="width:16px;height:16px;cursor:pointer">
           <span>調整を適用する</span>
@@ -1577,10 +1613,11 @@ function renderReport(){
           </div>
           <button class="btn btn-primary" onclick="saveAdjustment('${mk}','${st.id}')">${esc(st.name)}の調整を保存</button>
         </div>
-        ${a.enabled?`<div style="margin-top:8px;padding:8px;background:#fff;border-radius:6px;border:1px solid var(--border);font-size:13px">
+        ${(a.enabled||at.approved)?`<div style="margin-top:8px;padding:8px;background:#fff;border-radius:6px;border:1px solid var(--border);font-size:13px">
           <div style="display:flex;justify-content:space-between"><span>調整前</span><span>¥${base.toLocaleString()}</span></div>
-          <div style="display:flex;justify-content:space-between"><span>調整額</span><span style="color:${amt>=0?'var(--green)':'#c0392b'}">${amt>=0?'+':''}¥${amt.toLocaleString()}</span></div>
-          ${a.reason?`<div style="font-size:11px;color:var(--text-light);margin-top:4px">理由: ${esc(a.reason)}</div>`:''}
+          ${at.approved?`<div style="display:flex;justify-content:space-between"><span>承認済み申請</span><span style="color:${at.approved>=0?'var(--green)':'#c0392b'}">${at.approved>=0?'+':''}¥${at.approved.toLocaleString()}</span></div>`:''}
+          ${a.enabled?`<div style="display:flex;justify-content:space-between"><span>管理者調整</span><span style="color:${amt>=0?'var(--green)':'#c0392b'}">${amt>=0?'+':''}¥${amt.toLocaleString()}</span></div>`:''}
+          ${a.enabled&&a.reason?`<div style="font-size:11px;color:var(--text-light);margin-top:4px">理由: ${esc(a.reason)}</div>`:''}
           <div style="display:flex;justify-content:space-between;font-weight:700;color:var(--accent);margin-top:6px;padding-top:6px;border-top:1px solid var(--border)"><span>調整後支給額</span><span>¥${finalT.toLocaleString()}</span></div>
         </div>`:''}
       </div>`;
@@ -1588,19 +1625,29 @@ function renderReport(){
     html+=`<div style="display:flex;justify-content:space-between;font-weight:700;font-size:15px;padding:10px 4px 2px;border-top:2px solid var(--border);margin-top:4px"><span>調整後 総支給額</span><span style="color:var(--accent)">¥${grand.toLocaleString()}</span></div>
     </div>`;
   }else{
-    // スタッフには、管理者が自分に対して調整した結果のみを表示（編集不可）
-    const a=getAdjustment(mk,currentStaffId||'__none');
-    if(a.enabled){
-      const amt=Number(a.amount)||0;
-      const finalT=calc.totalReward+amt;
-      html+=`<div style="margin-top:16px;padding:14px;border:1px solid var(--border);border-radius:10px;background:#fff">
-        <div style="font-weight:700;margin-bottom:8px;font-size:13px">📝 管理者調整の適用結果</div>
-        <div style="font-size:13px;display:flex;justify-content:space-between"><span>調整前</span><span>¥${calc.totalReward.toLocaleString()}</span></div>
-        <div style="font-size:13px;display:flex;justify-content:space-between"><span>調整額</span><span style="color:${amt>=0?'var(--green)':'#c0392b'}">${amt>=0?'+':''}¥${amt.toLocaleString()}</span></div>
-        ${a.reason?`<div style="font-size:11px;color:var(--text-light);margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)">理由: ${esc(a.reason)}</div>`:''}
+    // スタッフ：イレギュラー対応の申請（自分の分だけ）＋ 適用結果
+    const sid=currentStaffId||'__none';
+    const a=getAdjustment(mk,sid);
+    const at=adjTotals(mk,sid);
+    const amt=at.manual;
+    const finalT=calc.totalReward+at.total;
+    html+=`<div style="margin-top:16px;padding:14px;border:2px dashed var(--border);border-radius:10px;background:#fafafa">
+      <div style="font-weight:700;margin-bottom:4px">🙋 イレギュラー対応の申請</div>
+      <div style="font-size:11px;color:var(--text-light);margin-bottom:10px">${monthDisplay(mk)}／通常の報酬計算に含まれない対応（例: 特別対応 1回 10,000円）を申請します。管理者が承認すると支給額に加算されます。</div>
+      ${a.items.length?`<div style="margin-bottom:10px">${a.items.map(i=>adjItemRow(mk,sid,i,false)).join('')}</div>`:''}
+      <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px;margin-bottom:8px">
+        <div><label style="font-size:11px;display:block;margin-bottom:3px">金額（円）</label><input type="number" id="reqAmount" placeholder="例: 10000" style="width:100%"></div>
+        <div><label style="font-size:11px;display:block;margin-bottom:3px">内容（ゲスト名・理由）</label><input type="text" id="reqReason" placeholder="例: 中川様 特別対応 1回" style="width:100%"></div>
+      </div>
+      <button class="btn btn-primary" onclick="requestAdjustment('${mk}')">申請する</button>
+      ${(a.enabled||at.approved)?`<div style="margin-top:12px;padding:10px;background:#fff;border-radius:6px;border:1px solid var(--border);font-size:13px">
+        <div style="display:flex;justify-content:space-between"><span>調整前</span><span>¥${calc.totalReward.toLocaleString()}</span></div>
+        ${at.approved?`<div style="display:flex;justify-content:space-between"><span>承認済み申請</span><span style="color:${at.approved>=0?'var(--green)':'#c0392b'}">${at.approved>=0?'+':''}¥${at.approved.toLocaleString()}</span></div>`:''}
+        ${a.enabled?`<div style="display:flex;justify-content:space-between"><span>管理者調整</span><span style="color:${amt>=0?'var(--green)':'#c0392b'}">${amt>=0?'+':''}¥${amt.toLocaleString()}</span></div>`:''}
+        ${a.enabled&&a.reason?`<div style="font-size:11px;color:var(--text-light);margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)">理由: ${esc(a.reason)}</div>`:''}
         <div style="font-size:18px;font-weight:700;color:var(--accent);margin-top:10px;padding-top:10px;border-top:2px solid var(--border);display:flex;justify-content:space-between"><span style="font-size:14px">調整後支給額</span><span>¥${finalT.toLocaleString()}</span></div>
-      </div>`;
-    }
+      </div>`:''}
+    </div>`;
   }
   html+=`</div>`;
   el.innerHTML=html;
@@ -1610,8 +1657,75 @@ function renderReport(){
 function getAdjustment(mk,staffKey){
   if(!D.adjustments)D.adjustments={};
   if(!D.adjustments[mk])D.adjustments[mk]={};
-  if(!D.adjustments[mk][staffKey])D.adjustments[mk][staffKey]={enabled:false,amount:0,reason:''};
-  return D.adjustments[mk][staffKey];
+  if(!D.adjustments[mk][staffKey])D.adjustments[mk][staffKey]={enabled:false,amount:0,reason:'',items:[]};
+  const a=D.adjustments[mk][staffKey];
+  if(!Array.isArray(a.items))a.items=[];
+  return a;
+}
+/* 適用額の内訳：manual=管理者調整（適用時のみ）、approved=承認済み申請の合計、pending=申請中の合計 */
+function adjTotals(mk,staffKey){
+  const a=getAdjustment(mk,staffKey);
+  const manual=a.enabled?(Number(a.amount)||0):0;
+  let approved=0,pending=0;
+  a.items.forEach(i=>{const v=Number(i.amount)||0;if(i.status==='approved')approved+=v;else if(i.status==='pending')pending+=v});
+  return{manual,approved,pending,total:manual+approved};
+}
+function adjItemRow(mk,staffKey,i,admin){
+  const v=Number(i.amount)||0;
+  const st=i.status==='approved'?'<span style="font-size:11px;background:var(--green);color:#fff;border-radius:10px;padding:1px 8px">承認済み</span>'
+    :i.status==='rejected'?'<span style="font-size:11px;background:#999;color:#fff;border-radius:10px;padding:1px 8px">却下</span>'
+    :'<span style="font-size:11px;background:#e67e22;color:#fff;border-radius:10px;padding:1px 8px">申請中</span>';
+  let btns='';
+  if(admin){
+    if(i.status==='pending')btns=`<button class="btn btn-primary btn-sm" onclick="setAdjustmentItemStatus('${mk}','${staffKey}','${i.id}','approved')">承認</button> <button class="btn btn-danger btn-sm" onclick="setAdjustmentItemStatus('${mk}','${staffKey}','${i.id}','rejected')">却下</button>`;
+    else btns=`<button class="btn btn-sm" style="background:#eee" onclick="setAdjustmentItemStatus('${mk}','${staffKey}','${i.id}','pending')">申請中に戻す</button>`;
+  }else if(i.status!=='approved'){
+    btns=`<button class="btn btn-sm" style="background:#eee" onclick="withdrawAdjustmentItem('${mk}','${i.id}')">${i.status==='rejected'?'削除':'取り下げ'}</button>`;
+  }
+  return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px dashed var(--border);font-size:13px">
+    <div style="flex:1;min-width:0"><div>${esc(i.reason||'（内容なし）')}</div><div style="font-size:11px;color:var(--text-light)">${i.createdAt?new Date(i.createdAt).toLocaleDateString('ja-JP'):''} ${st}</div></div>
+    <div style="font-weight:700;color:${v>=0?'var(--green)':'#c0392b'};white-space:nowrap">${v>=0?'+':''}¥${v.toLocaleString()}</div>
+    <div style="white-space:nowrap">${btns}</div>
+  </div>`;
+}
+/* スタッフ：イレギュラー対応を申請する（承認は管理者） */
+function requestAdjustment(mk){
+  if(isMaster||!currentStaffId){alert('申請はスタッフとしてログインして行ってください');return}
+  const amt=parseInt((document.getElementById('reqAmount')||{}).value)||0;
+  const reason=((document.getElementById('reqReason')||{}).value||'').trim();
+  if(!amt){alert('金額を入力してください');return}
+  if(!reason){alert('内容（ゲスト名・理由）を入力してください');return}
+  if(!confirm(`${monthDisplay(mk)}のイレギュラー対応として申請しますか？\n${reason}\n${amt>=0?'+':''}¥${amt.toLocaleString()}`))return;
+  const a=getAdjustment(mk,currentStaffId);
+  a.items.push({id:'adj_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),amount:amt,reason,createdAt:Date.now(),status:'pending'});
+  save();render();toast('✅ 申請しました（管理者の承認待ち）');
+}
+function withdrawAdjustmentItem(mk,itemId){
+  if(isMaster||!currentStaffId)return;
+  const a=getAdjustment(mk,currentStaffId);
+  const i=a.items.find(x=>x.id===itemId);
+  if(!i||i.status==='approved')return;
+  if(!confirm('この申請を取り下げますか？'))return;
+  a.items=a.items.filter(x=>x.id!==itemId);
+  save();render();
+}
+/* 管理者：申請を承認／却下する */
+function setAdjustmentItemStatus(mk,staffKey,itemId,status){
+  if(!isMaster){alert('承認は管理者のみ可能です');return}
+  const a=getAdjustment(mk,staffKey);
+  const i=a.items.find(x=>x.id===itemId);
+  if(!i)return;
+  i.status=status;
+  if(status!=='pending'){i.decidedAt=Date.now();}else{delete i.decidedAt;}
+  save();render();
+  if(status==='approved')toast('✅ 承認しました（支給額に加算）');
+}
+function toast(msg){
+  const t=document.createElement('div');
+  t.textContent=msg;
+  t.style.cssText='position:fixed;top:20px;left:50%;transform:translateX(-50%);background:var(--green);color:#fff;padding:10px 20px;border-radius:8px;z-index:300;box-shadow:0 4px 12px rgba(0,0,0,.2)';
+  document.body.appendChild(t);
+  setTimeout(()=>t.remove(),1800);
 }
 function toggleAdjustment(mk,staffKey,enabled){
   // 不正防止: 管理者以外は報酬調整不可
@@ -1634,12 +1748,7 @@ function saveAdjustment(mk,staffKey){
   if(inpR)adj.reason=inpR.value||'';
   adj.enabled=true;
   save();render();
-  // 軽い通知
-  const t=document.createElement('div');
-  t.textContent='✅ 調整を保存しました';
-  t.style.cssText='position:fixed;top:20px;left:50%;transform:translateX(-50%);background:var(--green);color:#fff;padding:10px 20px;border-radius:8px;z-index:300;box-shadow:0 4px 12px rgba(0,0,0,.2)';
-  document.body.appendChild(t);
-  setTimeout(()=>t.remove(),1800);
+  toast('✅ 調整を保存しました');
 }
 
 function renderClients(){
