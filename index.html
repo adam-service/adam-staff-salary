@@ -711,7 +711,9 @@ function applyChangesTo(state,ch,opts){
         if(key==='adjustments'){
           const cur=state.adjustments[mk]&&state.adjustments[mk][k];
           if(scope){
-            // スタッフ本人：承認欄と各申請の status は変えられない。承認済みは消せない
+            // スタッフ本人：確定済みの月は申請の追加・変更不可（確定＝申請も締め）
+            if(lockedBase[mk]&&lockedBase[mk][k])return;
+            // 承認欄と各申請の status は変えられない。承認済みは消せない
             if(v===null){if(cur&&(cur.enabled||(cur.items||[]).some(i=>i&&i.status==='approved')))return;}
             else v=_staffAdjustment(cur,v);
           }else if(v!==null&&cur){
@@ -1631,15 +1633,11 @@ function renderReport(){
     const at=adjTotals(mk,sid);
     const amt=at.manual;
     const finalT=calc.totalReward+at.total;
+    const lockedMine=isLockedForStaff(mk,sid);
     html+=`<div style="margin-top:16px;padding:14px;border:2px dashed var(--border);border-radius:10px;background:#fafafa">
-      <div style="font-weight:700;margin-bottom:4px">🙋 イレギュラー対応の申請</div>
-      <div style="font-size:11px;color:var(--text-light);margin-bottom:10px">${monthDisplay(mk)}／通常の報酬計算に含まれない対応を申請します。管理者が承認すると支給額に加算されます。</div>
-      ${a.items.length?`<div style="margin-bottom:10px">${a.items.map(i=>adjItemRow(mk,sid,i,false)).join('')}</div>`:''}
-      <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px;margin-bottom:8px">
-        <div><label style="font-size:11px;display:block;margin-bottom:3px">金額（円）</label><input type="number" id="reqAmount" placeholder="例: 10000" style="width:100%"></div>
-        <div><label style="font-size:11px;display:block;margin-bottom:3px">内容（ゲスト名・理由）</label><input type="text" id="reqReason" placeholder="例: ◯◯様 代行対応 1回" style="width:100%"></div>
-      </div>
-      <button class="btn btn-primary" onclick="requestAdjustment('${mk}')">申請する</button>
+      <div style="font-weight:700;margin-bottom:4px">🙋 イレギュラー対応</div>
+      <div style="font-size:11px;color:var(--text-light);margin-bottom:10px">${lockedMine?`${monthDisplay(mk)}は確定済みです。申請の追加・変更はできません（必要な場合は管理者へ）。`:`${monthDisplay(mk)}のイレギュラー対応は、入力タブの「🔒 ${monthDisplay(mk)} を確定する」から入力します。管理者が承認すると支給額に加算されます。`}</div>
+      ${a.items.length?`<div style="margin-bottom:4px">${a.items.map(i=>adjItemRow(mk,sid,i,false)).join('')}</div>`:`<div style="font-size:12px;color:var(--text-light)">${monthDisplay(mk)}の申請はありません</div>`}
       ${(a.enabled||at.approved)?`<div style="margin-top:12px;padding:10px;background:#fff;border-radius:6px;border:1px solid var(--border);font-size:13px">
         <div style="display:flex;justify-content:space-between"><span>調整前</span><span>¥${calc.totalReward.toLocaleString()}</span></div>
         ${at.approved?`<div style="display:flex;justify-content:space-between"><span>承認済み申請</span><span style="color:${at.approved>=0?'var(--green)':'#c0392b'}">${at.approved>=0?'+':''}¥${at.approved.toLocaleString()}</span></div>`:''}
@@ -1679,7 +1677,7 @@ function adjItemRow(mk,staffKey,i,admin){
   if(admin){
     if(i.status==='pending')btns=`<button class="btn btn-primary btn-sm" onclick="setAdjustmentItemStatus('${mk}','${staffKey}','${i.id}','approved')">承認</button> <button class="btn btn-danger btn-sm" onclick="setAdjustmentItemStatus('${mk}','${staffKey}','${i.id}','rejected')">却下</button>`;
     else btns=`<button class="btn btn-sm" style="background:#eee" onclick="setAdjustmentItemStatus('${mk}','${staffKey}','${i.id}','pending')">申請中に戻す</button>`;
-  }else if(i.status!=='approved'){
+  }else if(i.status!=='approved'&&!isLockedForStaff(mk,staffKey)){
     btns=`<button class="btn btn-sm" style="background:#eee" onclick="withdrawAdjustmentItem('${mk}','${i.id}')">${i.status==='rejected'?'削除':'取り下げ'}</button>`;
   }
   return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px dashed var(--border);font-size:13px">
@@ -1689,25 +1687,30 @@ function adjItemRow(mk,staffKey,i,admin){
   </div>`;
 }
 /* スタッフ：イレギュラー対応を申請する（承認は管理者） */
-function requestAdjustment(mk){
+function requestAdjustment(mk,fromModal){
   if(isMaster||!currentStaffId){alert('申請はスタッフとしてログインして行ってください');return}
+  if(isLockedForStaff(mk,currentStaffId)){alert(monthDisplay(mk)+'は確定済みのため、イレギュラー対応の追加はできません。管理者にご連絡ください。');return}
   const amt=parseInt((document.getElementById('reqAmount')||{}).value)||0;
   const reason=((document.getElementById('reqReason')||{}).value||'').trim();
   if(!amt){alert('金額を入力してください');return}
   if(!reason){alert('内容（ゲスト名・理由）を入力してください');return}
-  if(!confirm(`${monthDisplay(mk)}のイレギュラー対応として申請しますか？\n${reason}\n${amt>=0?'+':''}¥${amt.toLocaleString()}`))return;
+  if(!fromModal&&!confirm(`${monthDisplay(mk)}のイレギュラー対応として申請しますか？\n${reason}\n${amt>=0?'+':''}¥${amt.toLocaleString()}`))return;
   const a=getAdjustment(mk,currentStaffId);
   a.items.push({id:'adj_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),amount:amt,reason,createdAt:Date.now(),status:'pending'});
-  save();render();toast('✅ 申請しました（管理者の承認待ち）');
+  save();
+  if(fromModal){openConfirmMonthModal(mk);toast('✅ 追加しました（確定時に一緒に申請されます）');}
+  else{render();toast('✅ 申請しました（管理者の承認待ち）');}
 }
 function withdrawAdjustmentItem(mk,itemId){
   if(isMaster||!currentStaffId)return;
+  if(isLockedForStaff(mk,currentStaffId)){alert(monthDisplay(mk)+'は確定済みのため変更できません。管理者にご連絡ください。');return}
   const a=getAdjustment(mk,currentStaffId);
   const i=a.items.find(x=>x.id===itemId);
   if(!i||i.status==='approved')return;
   if(!confirm('この申請を取り下げますか？'))return;
   a.items=a.items.filter(x=>x.id!==itemId);
-  save();render();
+  save();
+  if(modalOpen())openConfirmMonthModal(mk);else render();
 }
 /* 管理者：申請を承認／却下する */
 function setAdjustmentItemStatus(mk,staffKey,itemId,status){
@@ -1978,11 +1981,59 @@ function confirmMyMonth(){
   if(isLockedForStaff(mk,currentStaffId)){
     alert(monthDisplay(mk)+'は確定済みです。\n解除が必要な場合は管理者にご依頼ください。');return;
   }
-  if(!confirm(monthDisplay(mk)+'のあなたの分を確定しますか？\n確定後の編集・解除は管理者のみ可能です。\n（確定時点の報酬額が保存され、以後コース単価を変えても確定分は変わりません）'))return;
+  openConfirmMonthModal(mk);
+}
+/* 確定モーダル：回数の確認 → イレギュラー対応の入力 → 確定 を1画面で行う */
+function openConfirmMonthModal(mk){
+  const sid=currentStaffId;
+  const mine=D.clients.filter(c=>c.staffId===sid);
+  const calc=calcMonth(mk,mine);
+  const a=getAdjustment(mk,sid);
+  const at=adjTotals(mk,sid);
+  const active=calc.details.filter(d=>d.count>0);
+  openModal(`
+    <div class="modal-header"><h2>🔒 ${monthDisplay(mk)} の報酬を確定</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <div style="font-size:12px;color:var(--text-light);margin-bottom:12px">① 回数を確認 → ② イレギュラー対応があれば追加 → ③ 確定。<b>確定後はセッション回数もイレギュラー対応も変更できません</b>（解除は管理者のみ）。</div>
+    <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;background:#fff">
+      <div style="font-weight:700;font-size:13px;margin-bottom:6px">① セッション回数の確認</div>
+      ${active.length?`<div style="max-height:180px;overflow-y:auto;font-size:13px">${active.map(d=>`<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed var(--border)"><span>${esc(d.client.name)}</span><span>${d.count}回</span></div>`).join('')}</div>`:'<div style="font-size:13px;color:var(--text-light)">この月のセッション入力はありません</div>'}
+      <div style="display:flex;justify-content:space-between;font-weight:700;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)"><span>合計 ${calc.totalSessions}回</span><span style="color:var(--green)">報酬 ¥${calc.totalReward.toLocaleString()}</span></div>
+    </div>
+    <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;background:#fafafa">
+      <div style="font-weight:700;font-size:13px;margin-bottom:4px">② イレギュラー対応（あれば）</div>
+      <div style="font-size:11px;color:var(--text-light);margin-bottom:8px">通常の報酬計算に含まれない対応を入力してください。管理者が承認すると支給額に加算されます。無ければそのまま③へ。</div>
+      ${a.items.length?`<div style="margin-bottom:8px">${a.items.map(i=>adjItemRow(mk,sid,i,false)).join('')}</div>`:''}
+      <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px;margin-bottom:8px">
+        <div><label style="font-size:11px;display:block;margin-bottom:3px">金額（円）</label><input type="number" id="reqAmount" placeholder="例: 10000" style="width:100%"></div>
+        <div><label style="font-size:11px;display:block;margin-bottom:3px">内容（ゲスト名・理由）</label><input type="text" id="reqReason" placeholder="例: ◯◯様 代行対応 1回" style="width:100%"></div>
+      </div>
+      <button class="btn btn-sm" style="background:#fff;border:1px solid var(--green);color:var(--green)" onclick="requestAdjustment('${mk}',true)">＋ 追加する</button>
+      ${at.pending||at.approved?`<div style="font-size:12px;margin-top:8px;color:var(--text-light)">申請合計 ${(at.pending+at.approved)>=0?'+':''}¥${(at.pending+at.approved).toLocaleString()}（承認後に加算）</div>`:''}
+    </div>
+    <div style="border:1px solid var(--border);border-radius:10px;padding:12px;background:#fff">
+      <div style="font-weight:700;font-size:13px;margin-bottom:8px">③ 確定</div>
+      <div style="font-size:12px;color:var(--text-light);margin-bottom:10px">確定時点の報酬額が保存されます。以後コース単価を変えても確定分は変わりません。</div>
+      <button class="btn btn-lock" onclick="finalizeMyMonth('${mk}')">🔒 この内容で ${monthDisplay(mk)} を確定する</button>
+      <button class="btn" style="background:#eee;margin-top:8px" onclick="closeModal()">キャンセル（あとで確定する）</button>
+    </div>`);
+}
+function finalizeMyMonth(mk){
+  if(isMaster||!currentStaffId)return;
+  if(isLockedForStaff(mk,currentStaffId)){closeModal();render();return}
+  // 入力途中のイレギュラー対応があれば先に扱う
+  const amt=parseInt((document.getElementById('reqAmount')||{}).value)||0;
+  const reason=((document.getElementById('reqReason')||{}).value||'').trim();
+  if(amt||reason){
+    if(!(amt&&reason)){alert('イレギュラー対応の入力が途中です。金額と内容の両方を入れて「＋ 追加する」を押すか、両方を空にしてください');return}
+    if(!confirm('入力中のイレギュラー対応を追加してから確定します。よろしいですか？\n'+reason+'  '+(amt>=0?'+':'')+'¥'+amt.toLocaleString()))return;
+    const a=getAdjustment(mk,currentStaffId);
+    a.items.push({id:'adj_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),amount:amt,reason,createdAt:Date.now(),status:'pending'});
+  }
+  if(!confirm(monthDisplay(mk)+'のあなたの分を確定しますか？\n確定後はセッション回数・イレギュラー対応の追加や変更ができません（解除は管理者のみ）。'))return;
   if(!D.lockedMonths[mk])D.lockedMonths[mk]={};
   D.lockedMonths[mk][currentStaffId]=Date.now();
   snapshotStaffMonth(mk,currentStaffId);
-  save();render();
+  save();closeModal();render();toast('🔒 '+monthDisplay(mk)+'を確定しました');
 }
 /* 管理者が「スタッフ別」に確定を解除する */
 function unlockStaffMonth(mk,staffId){
