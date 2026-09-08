@@ -661,6 +661,11 @@ function applyChangesTo(state,ch,opts){
     staffOf[id]=String(v.staffId||'');
   });
   state.clients=state.clients.filter(c=>!state.deletedClients[c.id]);
+  // 削除済みゲストのセッション行・凍結値は取り除く（シートに書かれないので応答データも揃える）
+  Object.keys(state.deletedClients).forEach(id=>{
+    Object.keys(state.sessions).forEach(mk=>{if(state.sessions[mk]&&state.sessions[mk][id])delete state.sessions[mk][id]});
+    Object.keys(state.lockedSnapshots).forEach(mk=>{if(state.lockedSnapshots[mk]&&state.lockedSnapshots[mk][id])delete state.lockedSnapshots[mk][id]});
+  });
   // セッション
   Object.keys(ch.sessions||{}).forEach(mk=>{
     Object.keys(ch.sessions[mk]||{}).forEach(cid=>{
