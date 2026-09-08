@@ -539,8 +539,9 @@ function load(){
   try{const s=localStorage.getItem(SK);D=s?JSON.parse(s):defaultData()}
   catch(e){D=defaultData()}
   migrateData(D);
+  loadBase();
 }
-function saveLocal(){localStorage.setItem(SK,JSON.stringify(D))}
+function saveLocal(){localStorage.setItem(SK,JSON.stringify(D));saveBase()}
 
 /* ===== Cloud Sync ===== */
 function updateSyncStatus(state,text){
@@ -575,7 +576,235 @@ async function fetchFromCloud(retries){
     return null;
   }
 }
-async function saveToCloud(retries){
+/* ===== 差分同期：共通ロジック（GAS と adam_staff_salary.html で同一内容を保つこと） =====
+ * diffData(base,cur)      … 前回同期時点(base)から現在(cur)への変更だけを取り出す
+ * applyChangesTo(state,ch)… 変更をstateに適用する（サーバー・クライアント共通）
+ * セッション回数は「差分（+1/-1）」で運ぶので、2台が同時に別々に押しても両方が足される。
+ * それ以外（ゲスト情報・確定ロック・凍結値・報酬調整・設定）は項目単位の置換、削除は null。
+ */
+function _syncEq(a,b){return JSON.stringify(a===undefined?null:a)===JSON.stringify(b===undefined?null:b)}
+function _syncKeys(a,b){const s={};Object.keys(a||{}).forEach(k=>{s[k]=1});Object.keys(b||{}).forEach(k=>{s[k]=1});return Object.keys(s)}
+function diffData(base,cur){
+  base=base||{};cur=cur||{};
+  const ch={};
+  // ゲスト（レコード単位の置換。削除は null）
+  const bc={};(base.clients||[]).forEach(c=>{bc[c.id]=c});
+  const cc={};(cur.clients||[]).forEach(c=>{cc[c.id]=c});
+  const clients={};
+  Object.keys(cc).forEach(id=>{if(!_syncEq(bc[id],cc[id]))clients[id]=cc[id]});
+  Object.keys(bc).forEach(id=>{if(!cc[id])clients[id]=null});
+  if(Object.keys(clients).length)ch.clients=clients;
+  // セッション（count は差分、sessionPriceOverride は値）
+  const sessions={};
+  _syncKeys(base.sessions,cur.sessions).forEach(mk=>{
+    const bm=(base.sessions||{})[mk]||{},cm=(cur.sessions||{})[mk]||{};
+    _syncKeys(bm,cm).forEach(cid=>{
+      const c=cm[cid];if(!c)return; // ローカルで行が消えても変更扱いしない（0行は残す設計）
+      const b=bm[cid]||{count:0,sessionPriceOverride:null};
+      const e={};
+      const d=(Number(c.count)||0)-(Number(b.count)||0);
+      if(d)e.delta=d;
+      const bo=b.sessionPriceOverride==null?null:Number(b.sessionPriceOverride);
+      const co=c.sessionPriceOverride==null?null:Number(c.sessionPriceOverride);
+      if(bo!==co)e.override=co;
+      if(Object.keys(e).length){if(!sessions[mk])sessions[mk]={};sessions[mk][cid]=e}
+    });
+  });
+  if(Object.keys(sessions).length)ch.sessions=sessions;
+  // 2階層マップ（確定ロック／凍結値／報酬調整）：値の置換、削除は null
+  ['lockedMonths','lockedSnapshots','adjustments'].forEach(key=>{
+    const out={};
+    const bo=base[key]||{},co=cur[key]||{};
+    _syncKeys(bo,co).forEach(mk=>{
+      const bm=bo[mk]||{},cm=co[mk]||{};
+      _syncKeys(bm,cm).forEach(k=>{
+        if(!(k in cm)){if(k in bm){(out[mk]=out[mk]||{})[k]=null}}
+        else if(!_syncEq(bm[k],cm[k])){(out[mk]=out[mk]||{})[k]=cm[k]}
+      });
+    });
+    if(Object.keys(out).length)ch[key]=out;
+  });
+  // 設定（フィールド単位の置換）
+  const cfg={};
+  const bcfg=base.config||{},ccfg=cur.config||{};
+  ['masterPin','staff','prices','ltvThreshold'].forEach(k=>{if(k in ccfg&&!_syncEq(bcfg[k],ccfg[k]))cfg[k]=ccfg[k]});
+  if(Object.keys(cfg).length)ch.config=cfg;
+  // 削除記録（追加分のみ）
+  const del={};
+  Object.keys(cur.deletedClients||{}).forEach(id=>{if(!(base.deletedClients||{})[id])del[id]=cur.deletedClients[id]});
+  if(Object.keys(del).length)ch.deletedClients=del;
+  if(cur.snapshotVersion&&cur.snapshotVersion!==base.snapshotVersion)ch.snapshotVersion=cur.snapshotVersion;
+  return ch;
+}
+function isEmptyChanges(ch){return !ch||Object.keys(ch).length===0}
+/* state を破壊的に更新して返す。
+ * opts.lockedBase … 不変判定に使う確定ロック（適用前のサーバー値）。確定済み(月×担当)のセッションは変更しない
+ * opts.scope      … スタッフID。指定時は他スタッフ担当ゲストの変更と設定変更を無視（スタッフモードの保存） */
+function applyChangesTo(state,ch,opts){
+  opts=opts||{};ch=ch||{};
+  const scope=opts.scope||null;
+  const lockedBase=opts.lockedBase||state.lockedMonths||{};
+  state.clients=state.clients||[];state.sessions=state.sessions||{};state.lockedMonths=state.lockedMonths||{};
+  state.lockedSnapshots=state.lockedSnapshots||{};state.adjustments=state.adjustments||{};
+  state.deletedClients=state.deletedClients||{};state.config=state.config||{};
+  const staffOf={};state.clients.forEach(c=>{staffOf[c.id]=String(c.staffId||'')});
+  // 削除記録
+  Object.keys(ch.deletedClients||{}).forEach(id=>{if(!state.deletedClients[id])state.deletedClients[id]=ch.deletedClients[id]});
+  // ゲスト
+  Object.keys(ch.clients||{}).forEach(id=>{
+    const v=ch.clients[id];
+    const idx=state.clients.findIndex(c=>c.id===id);
+    if(scope&&idx>=0&&staffOf[id]!==scope)return;
+    if(v===null){if(idx>=0)state.clients.splice(idx,1);if(!state.deletedClients[id])state.deletedClients[id]=Date.now();delete staffOf[id];return}
+    if(scope&&idx<0&&String(v.staffId||'')!==scope)return;
+    if(idx>=0)state.clients[idx]=v;else state.clients.push(v);
+    staffOf[id]=String(v.staffId||'');
+  });
+  state.clients=state.clients.filter(c=>!state.deletedClients[c.id]);
+  // セッション
+  Object.keys(ch.sessions||{}).forEach(mk=>{
+    Object.keys(ch.sessions[mk]||{}).forEach(cid=>{
+      const e=ch.sessions[mk][cid]||{};
+      if(state.deletedClients[cid])return;
+      const sid=staffOf[cid];
+      if(sid===undefined)return;                                   // 存在しないゲスト
+      if(lockedBase[mk]&&lockedBase[mk][sid])return;               // 確定済みは不変
+      if(scope&&sid!==scope)return;                                // 他スタッフ担当
+      if(!state.sessions[mk])state.sessions[mk]={};
+      const s=state.sessions[mk][cid]||(state.sessions[mk][cid]={count:0,sessionPriceOverride:null});
+      if(e.delta)s.count=Math.max(0,(Number(s.count)||0)+Number(e.delta));
+      if('override' in e)s.sessionPriceOverride=e.override==null?null:Number(e.override);
+    });
+  });
+  // 2階層マップ
+  ['lockedMonths','lockedSnapshots','adjustments'].forEach(key=>{
+    Object.keys(ch[key]||{}).forEach(mk=>{
+      Object.keys(ch[key][mk]||{}).forEach(k=>{
+        const v=ch[key][mk][k];
+        if(scope){
+          if(key==='lockedMonths'&&k!==scope)return;
+          if(key==='adjustments'&&k!==scope)return;
+          if(key==='lockedSnapshots'&&staffOf[k]!==undefined&&staffOf[k]!==scope)return;
+        }
+        if(!state[key][mk])state[key][mk]={};
+        if(v===null)delete state[key][mk][k];else state[key][mk][k]=v;
+      });
+      if(state[key][mk]&&Object.keys(state[key][mk]).length===0)delete state[key][mk];
+    });
+  });
+  // 設定（スタッフモードでは変更不可）
+  if(!scope)Object.keys(ch.config||{}).forEach(k=>{state.config[k]=ch.config[k]});
+  if(ch.snapshotVersion)state.snapshotVersion=ch.snapshotVersion;
+  return state;
+}
+
+/* ===== 差分同期（2026-09-08〜） =====
+ * BASE = 前回サーバーと同期した時点のデータ（サーバーの真値のコピー。localStorage にも保持）。
+ * 保存は diffData(BASE,D) の「変更分だけ」を action=applyChanges で送る。
+ * サーバーは現在値に変更分を適用して結果を返すので、古い画面からの保存で他の人の入力が巻き戻らない。
+ * セッション回数は差分（+1/-1）で送るため、2台が同時に押しても両方反映される。
+ * 受信時は「サーバー値 ＋ まだ送っていないローカル変更」を D にする（adoptCloud）。 */
+const BASE_KEY=SK+'_base';
+let BASE=null;
+function loadBase(){try{const s=localStorage.getItem(BASE_KEY);BASE=s?JSON.parse(s):null}catch(e){BASE=null}}
+function saveBase(){try{if(BASE)localStorage.setItem(BASE_KEY,JSON.stringify(BASE))}catch(e){}}
+function deepCopy(o){return JSON.parse(JSON.stringify(o))}
+function newChangeId(){return 'ch_'+Date.now().toString(36)+Math.random().toString(36).slice(2,8)}
+function modalOpen(){return !!document.querySelector('.modal-overlay.show')}
+function lockScreenOpen(){const l=document.getElementById('lockScreen');return !!(l&&!l.classList.contains('hidden'))}
+const _sync={inFlight:false,queued:false,changeId:null,lastDoneAt:0};
+
+/* サーバーから受け取ったデータを採用する。未送信のローカル変更は上に載せ直す。 */
+function adoptCloud(data){
+  migrateData(data);
+  const serverCopy=deepCopy(data);
+  if(BASE){
+    const pending=diffData(BASE,D);
+    if(!isEmptyChanges(pending))applyChangesTo(data,pending,{lockedBase:serverCopy.lockedMonths});
+  }else{
+    legacyMergeLocalInto(data); // 差分同期へ移行する最初の1回だけ：旧方式の保護マージ
+  }
+  BASE=serverCopy;D=data;
+  saveLocal();
+}
+/* サーバー値をそのまま採用（ローカルの未送信分は捨てる）。インポート直後など */
+function adoptCloudStrict(data){
+  migrateData(data);
+  BASE=deepCopy(data);D=data;
+  saveLocal();
+}
+/* 旧方式のマージ（ローカルにあってクラウドに無いものだけ保護）。BASE が無い＝移行前のローカルデータにのみ使う */
+function legacyMergeLocalInto(data){
+  if(!D)return;
+  if((!data.config.staff||data.config.staff.length===0)&&D.config.staff&&D.config.staff.length>0){
+    data.config.staff=D.config.staff;
+  }
+  if(!data.adjustments)data.adjustments={};
+  Object.keys(D.adjustments||{}).forEach(mk=>{
+    if(!data.adjustments[mk])data.adjustments[mk]={};
+    Object.keys(D.adjustments[mk]).forEach(sk=>{
+      if(!data.adjustments[mk][sk])data.adjustments[mk][sk]=D.adjustments[mk][sk];
+    });
+  });
+  const del=applyDeletions(data);
+  const cloudClientIds=new Set((data.clients||[]).map(c=>c.id));
+  (D.clients||[]).forEach(c=>{if(!cloudClientIds.has(c.id)&&!del[c.id])data.clients.push(c)});
+  Object.keys(D.sessions||{}).forEach(mk=>{
+    if(!data.sessions[mk])data.sessions[mk]={};
+    Object.keys(D.sessions[mk]).forEach(cid=>{
+      if(!data.sessions[mk][cid]&&!del[cid])data.sessions[mk][cid]=D.sessions[mk][cid];
+    });
+  });
+  mergeSnapshotsInto(data.lockedSnapshots,D.lockedSnapshots);
+}
+
+/* 変更分だけをクラウドへ送る。同時送信はしない（直列化）。失敗時は同じ changeId で再送＝二重適用されない */
+async function saveToCloud(){
+  if(!API_URL)return false;
+  if(_sync.inFlight){_sync.queued=true;return false;}
+  if(!BASE)return saveToCloudFull(); // 移行前（BASE 未取得）は旧方式
+  const changes=diffData(BASE,D);
+  if(isEmptyChanges(changes)){updateSyncStatus('online','接続済み');return true;}
+  _sync.inFlight=true;
+  if(!_sync.changeId)_sync.changeId=newChangeId();
+  const sent=deepCopy(D);
+  updateSyncStatus('syncing','保存中...');
+  try{
+    const res=await fetch(API_URL+'?action=applyChanges',{
+      method:'POST',
+      headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body:JSON.stringify({changeId:_sync.changeId,scopeStaffId:isMaster?null:(currentStaffId||null),changes}),
+      redirect:'follow'
+    });
+    const result=await res.json();
+    if(result.error){
+      if(/Unknown action/.test(result.error)){_sync.inFlight=false;return saveToCloudFull();} // 旧サーバー
+      throw new Error(result.error);
+    }
+    if(!result.data)throw new Error('サーバー応答が不正です');
+    // 成功：サーバーの結果を基準にし、送信後に起きたローカル変更だけを載せ直す
+    const server=result.data;migrateData(server);
+    const serverCopy=deepCopy(server);
+    const later=diffData(sent,D);
+    if(!isEmptyChanges(later))applyChangesTo(server,later,{lockedBase:serverCopy.lockedMonths});
+    BASE=serverCopy;D=server;saveLocal();
+    _sync.changeId=null;_sync.lastDoneAt=Date.now();
+    updateSyncStatus('online','保存完了');
+    setTimeout(()=>{if(!_sync.inFlight)updateSyncStatus('online','接続済み')},2000);
+    if(!modalOpen()&&!lockScreenOpen())render();
+    return true;
+  }catch(e){
+    console.warn('Cloud save error:',e);
+    updateSyncStatus('offline','未保存（自動再試行）');
+    setTimeout(()=>saveToCloud(),5000);
+    return false;
+  }finally{
+    _sync.inFlight=false;
+    if(_sync.queued){_sync.queued=false;setTimeout(()=>saveToCloud(),300);}
+  }
+}
+/* 旧方式：全データ送信（サーバー側ガード付き）。インポート復元と移行前のみ使用 */
+async function saveToCloudFull(retries){
   if(!API_URL)return false;
   if(retries==null)retries=2;
   updateSyncStatus('syncing','保存中...');
@@ -598,7 +827,7 @@ async function saveToCloud(retries){
     if(result.error){
       if((result.error==='BUSY'||/混み合/.test(result.error))&&retries>0){
         await new Promise(r=>setTimeout(r,2000));
-        return saveToCloud(retries-1);
+        return saveToCloudFull(retries-1);
       }
       throw new Error(result.error);
     }
@@ -608,18 +837,13 @@ async function saveToCloud(retries){
     return true;
   }catch(e){
     console.warn('Cloud save error:',e);
-    // 保存失敗時もローカルに残るので、エラーではなく「未保存（再試行予定）」表示
     updateSyncStatus('offline','未保存（自動再試行）');
-    // 5秒後にもう一度試す
-    if(retries>0)setTimeout(()=>saveToCloud(retries-1),5000);
+    if(retries>0)setTimeout(()=>saveToCloudFull(retries-1),5000);
     return false;
   }
 }
-/* 確定解除（管理者操作）のときだけ、サーバー側にロック削除を許可させるフラグ */
+/* 確定解除（管理者操作）のときだけ、旧方式サーバーにロック削除を許可させるフラグ（差分方式では不要だが互換のため残す） */
 let pendingLockRemoval=false;
-/* クラウドへ送るペイロード。
-   scopeStaffId= スタッフモードの保存であることをサーバーに伝える識別子。
-   サーバーは他スタッフ担当ゲストのデータを上書きしなくなる（古い端末による巻き戻し防止）。 */
 function buildCloudPayload(){
   return Object.assign({},D,{
     scopeStaffId:isMaster?null:(currentStaffId||null),
@@ -632,44 +856,18 @@ function save(){
   _lastLocalSaveAt=Date.now();
   if(API_URL){
     if(saveTimer)clearTimeout(saveTimer);
-    saveTimer=setTimeout(()=>saveToCloud(),SAVE_DELAY);
+    saveTimer=setTimeout(()=>{saveTimer=null;saveToCloud()},SAVE_DELAY);
   }
 }
 async function syncFromCloud(){
   showLoading('サーバーからデータを取得中...');
   const data=await fetchFromCloud();
   if(data){
-    migrateData(data);
-    const cloudHasClients=data.clients&&data.clients.length>0;
-    const localHasClients=D.clients&&D.clients.length>0;
-    if(cloudHasClients){
-      if((!data.config.staff||data.config.staff.length===0)&&D.config.staff&&D.config.staff.length>0){
-        data.config.staff=D.config.staff;
-      }
-      // 報酬調整データもクラウドが空ならローカル保持
-      if((!data.adjustments||Object.keys(data.adjustments).length===0)&&D.adjustments&&Object.keys(D.adjustments).length>0){
-        data.adjustments=D.adjustments;
-      }
-      mergeSnapshotsInto(data.lockedSnapshots,D.lockedSnapshots);
-      applyDeletions(data); // 削除記録を統合＋削除済みゲストを除去（復活防止）
-      D=data;
-      const bf=backfillLockedSnapshots();
-      saveLocal();render();
-      if(bf&&API_URL)saveToCloud();
-      alert('最新データを取得しました');
-    }else if(localHasClients){
-      alert('クラウドにゲストデータがありません。ローカルデータを維持し、クラウドへ保存します。');
-      saveToCloud();render();
-    }else{
-      if((!data.config.staff||data.config.staff.length===0)&&D.config.staff&&D.config.staff.length>0){
-        data.config.staff=D.config.staff;
-      }
-      // 報酬調整データもクラウドが空ならローカル保持
-      if((!data.adjustments||Object.keys(data.adjustments).length===0)&&D.adjustments&&Object.keys(D.adjustments).length>0){
-        data.adjustments=D.adjustments;
-      }
-      D=data;saveLocal();render();alert('最新データを取得しました');
-    }
+    adoptCloud(data);
+    const bf=backfillLockedSnapshots();
+    saveLocal();render();
+    if(API_URL&&(bf||!isEmptyChanges(diffData(BASE,D))))saveToCloud();
+    alert('最新データを取得しました');
   }else{alert('取得に失敗しました。ローカルデータを使用します。');}
   hideLoading();
 }
@@ -799,20 +997,9 @@ async function logout(){
   document.getElementById('pinError').textContent='';
   switchRole('staff');
   if(API_URL){
+    if(BASE&&!isEmptyChanges(diffData(BASE,D))){if(saveTimer){clearTimeout(saveTimer);saveTimer=null}await saveToCloud();}
     const data=await fetchFromCloud();
-    if(data){
-      migrateData(data);
-      const cloudHasClients=data.clients&&data.clients.length>0;
-      if(cloudHasClients){
-        if((!data.config.staff||data.config.staff.length===0)&&D.config.staff&&D.config.staff.length>0){
-          data.config.staff=D.config.staff;
-        }
-        if((!data.adjustments||Object.keys(data.adjustments).length===0)&&D.adjustments&&Object.keys(D.adjustments).length>0){
-          data.adjustments=D.adjustments;
-        }
-        D=data;saveLocal();renderStaffSelector();
-      }
-    }
+    if(data){adoptCloud(data);renderStaffSelector();}
   }
 }
 
@@ -2245,7 +2432,11 @@ function importData(e){
       const imported=JSON.parse(ev.target.result);
       if(!imported.config||!imported.clients){alert('無効なデータです');return}
       if(!confirm('現在のデータを上書きしますか？'))return;
-      D=imported;migrateData(D);save();render();alert('インポートしました');
+      D=imported;migrateData(D);saveLocal();render();
+      if(API_URL){
+        showLoading('クラウドへ送信中...');
+        saveToCloudFull().then(fetchFromCloud).then(data=>{if(data)adoptCloudStrict(data);hideLoading();render();alert('インポートしました');});
+      }else alert('インポートしました');
     }catch(err){alert('ファイルの読み込みに失敗しました')}
   };
   reader.readAsText(f);e.target.value='';
@@ -2298,63 +2489,17 @@ renderStaffSelector();
 
 (async function boot(){
   if(API_URL){
+    const t0=Date.now();
     const data=await fetchFromCloud();
-    if(data){
-      migrateData(data);
-      const cloudHasClients=data.clients&&data.clients.length>0;
-      const localHasClients=D.clients&&D.clients.length>0;
-      if(cloudHasClients){
-        // クラウドにスタッフが無くローカルにいる場合はローカルを維持
-        if((!data.config.staff||data.config.staff.length===0)&&D.config.staff&&D.config.staff.length>0){
-          data.config.staff=D.config.staff;
-        }
-        // 報酬調整データもクラウドが空ならローカル保持
-        if(!data.adjustments||Object.keys(data.adjustments).length===0){
-          if(D.adjustments&&Object.keys(D.adjustments).length>0)data.adjustments=D.adjustments;
-        }else if(D.adjustments){
-          // 両方ある場合はマージ（ローカルにあってクラウドに無いものを追加）
-          Object.keys(D.adjustments).forEach(mk=>{
-            if(!data.adjustments[mk])data.adjustments[mk]={};
-            Object.keys(D.adjustments[mk]).forEach(sk=>{
-              if(!data.adjustments[mk][sk])data.adjustments[mk][sk]=D.adjustments[mk][sk];
-            });
-          });
-        }
-        // 削除記録を統合し、削除済みゲストはクラウド側からも除去（復活防止）
-        const del=applyDeletions(data);
-        // ローカルにあってクラウドに無いゲスト・セッションをマージ（未送信の変更を保護。削除済みは復活させない）
-        const cloudClientIds=new Set(data.clients.map(c=>c.id));
-        (D.clients||[]).forEach(c=>{if(!cloudClientIds.has(c.id)&&!del[c.id])data.clients.push(c)});
-        Object.keys(D.sessions||{}).forEach(mk=>{
-          if(!data.sessions[mk])data.sessions[mk]={};
-          Object.keys(D.sessions[mk]).forEach(cid=>{
-            if(!data.sessions[mk][cid]&&!del[cid])data.sessions[mk][cid]=D.sessions[mk][cid];
-          });
-        });
-        // 確定スナップショット：クラウドを正とし、ローカル限定の凍結値だけ保護的にマージ
-        mergeSnapshotsInto(data.lockedSnapshots,D.lockedSnapshots);
-        // ローカルに未送信のデータがあった場合はクラウドへ送信（削除済みは除外）
-        const hadUnsentLocal=(D.clients||[]).some(c=>!cloudClientIds.has(c.id)&&!del[c.id]);
-        D=data;
-        // クラウドの最新コースを取得した後で、確定月の未凍結分を正しい単価で凍結（一度だけ）
-        const backfilled=backfillLockedSnapshots();
-        saveLocal();
-        if((hadUnsentLocal||backfilled)&&API_URL)saveToCloud();
-      }else if(localHasClients){
-        console.log('Cloud is empty but local has data — pushing local to cloud');
-        saveToCloud();
-      }else{
-        if((!data.config.staff||data.config.staff.length===0)&&D.config.staff&&D.config.staff.length>0){
-          data.config.staff=D.config.staff;
-        }
-        D=data;saveLocal();
-      }
+    if(data&&_sync.lastDoneAt<t0&&!_sync.inFlight){
+      adoptCloud(data);
+      // クラウドの最新コースを取得した後で、確定月の未凍結分を正しい単価で凍結（一度だけ）
+      backfillLockedSnapshots();
+      saveLocal();
+      if(!isEmptyChanges(diffData(BASE,D)))saveToCloud(); // 未送信のローカル変更があれば送る
     }
-    // クラウド取得後、ロック画面のスタッフ選択を最新データで再描画
     window.__bootDone=true;
-    if(document.getElementById('lockScreen') && !document.getElementById('lockScreen').classList.contains('hidden')){
-      renderStaffSelector();
-    }
+    if(lockScreenOpen())renderStaffSelector();
   }else{
     // API_URLは常にデフォルトが入るのでここには来ない想定。念のためフォールバック。
     window.__bootDone=true;
@@ -2364,68 +2509,33 @@ renderStaffSelector();
   }
 })();
 
-/* ===== 自動同期（30秒ごとにクラウド最新を取得して再描画） ===== */
+/* ===== 自動同期（30秒ごとにクラウド最新を取得し、未送信のローカル変更を載せて再描画） ===== */
 let _autoSyncTimer=null;
 async function autoSyncTick(){
   if(!API_URL)return;
-  // ローカルで最近編集した／クラウド送信中はスキップ（ローカルの変更がクラウド側に反映されてからフェッチする）
-  if(saveTimer)return;
-  if(Date.now()-_lastLocalSaveAt<10000)return;
-  // モーダル（編集中）の間も同期しない
-  if(document.querySelector('.modal-overlay.show'))return;
+  if(saveTimer||_sync.inFlight)return;          // 送信待ち／送信中はスキップ
+  if(Date.now()-_lastLocalSaveAt<10000)return;   // 直近に編集した直後もスキップ
+  if(modalOpen())return;                         // 編集ダイアログ中は同期しない
   try{
+    const t0=Date.now();
     const data=await fetchFromCloud();
     if(!data)return;
-    migrateData(data);
-    // ローカル優先：ローカルに有るがクラウドに無いスタッフ／ゲスト／チケット／調整を保護
-    if((!data.config.staff||data.config.staff.length===0)&&D.config.staff&&D.config.staff.length>0){
-      data.config.staff=D.config.staff;
+    if(modalOpen()||_sync.inFlight||saveTimer||_sync.lastDoneAt>t0)return; // 取得中に状況が変わったら見送る
+    adoptCloud(data);
+    const bf=backfillLockedSnapshots();
+    saveLocal();
+    if(lockScreenOpen()){renderStaffSelector();return;}
+    if(bf&&API_URL)saveToCloud();
+    if(currentStaffId&&!findStaff(currentStaffId)){
+      alert('スタッフ情報が更新されました。再ログインしてください。');
+      logout();return;
     }
-    // 報酬調整データのマージ（ローカル優先）
-    if(!data.adjustments)data.adjustments={};
-    if(D.adjustments){
-      Object.keys(D.adjustments).forEach(mk=>{
-        if(!data.adjustments[mk])data.adjustments[mk]={};
-        Object.keys(D.adjustments[mk]).forEach(sk=>{
-          if(!data.adjustments[mk][sk])data.adjustments[mk][sk]=D.adjustments[mk][sk];
-        });
-      });
-    }
-    // 削除記録を統合し、削除済みゲストはクラウド側からも除去（復活防止）
-    const del=applyDeletions(data);
-    // ローカルにあってクラウドに無いゲストはマージ（ローカル優先。削除済みは復活させない）
-    const cloudClientIds=new Set((data.clients||[]).map(c=>c.id));
-    (D.clients||[]).forEach(c=>{
-      if(!cloudClientIds.has(c.id)&&!del[c.id])data.clients.push(c);
-    });
-    // ローカルにあってクラウドに無いセッション数もマージ（削除済みは除外）
-    Object.keys(D.sessions||{}).forEach(mk=>{
-      if(!data.sessions[mk])data.sessions[mk]={};
-      Object.keys(D.sessions[mk]).forEach(cid=>{
-        if(!data.sessions[mk][cid]&&!del[cid])data.sessions[mk][cid]=D.sessions[mk][cid];
-      });
-    });
-    // 確定スナップショット：クラウドを正とし、ローカル限定の凍結値だけ保護的にマージ
-    mergeSnapshotsInto(data.lockedSnapshots,D.lockedSnapshots);
-    const lockOpen=document.getElementById('lockScreen') && !document.getElementById('lockScreen').classList.contains('hidden');
-    if(lockOpen){
-      D=data;backfillLockedSnapshots();saveLocal();renderStaffSelector();
-    }else{
-      D=data;
-      const bf=backfillLockedSnapshots();
-      saveLocal();
-      if(bf&&API_URL)saveToCloud();
-      if(currentStaffId&&!findStaff(currentStaffId)){
-        alert('スタッフ情報が更新されました。再ログインしてください。');
-        logout();return;
-      }
-      render();
-    }
+    render();
   }catch(e){console.warn('autoSync failed',e)}
 }
 function startAutoSync(){
   if(_autoSyncTimer)clearInterval(_autoSyncTimer);
-  _autoSyncTimer=setInterval(autoSyncTick,60000);
+  _autoSyncTimer=setInterval(autoSyncTick,30000);
 }
 startAutoSync();
 </script>
