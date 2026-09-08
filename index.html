@@ -638,7 +638,8 @@ function diffData(base,cur){
 }
 function isEmptyChanges(ch){return !ch||Object.keys(ch).length===0}
 /* スタッフモードで送られた報酬調整を正規化する。
- * 承認欄（enabled/amount/reason）は既存のまま、申請(items)は新規＝pending、承認済み/却下済みは編集不可、承認済みは削除不可 */
+ * 承認欄（enabled/amount/reason＝管理者調整）は既存のまま。イレギュラー報酬(items)はスタッフが追加・削除できる
+ * （確定前のみ。確定済み月の判定は呼び出し側）。各項目の status は管理者だけが変えられる（取消＝cancelled） */
 function _staffAdjustment(cur,v){
   cur=cur||{enabled:false,amount:0,reason:'',items:[]};
   const curItems={};(cur.items||[]).forEach(i=>{if(i&&i.id)curItems[i.id]=i});
@@ -647,11 +648,10 @@ function _staffAdjustment(cur,v){
   ((v&&v.items)||[]).forEach(i=>{
     if(!i||!i.id||seen[i.id])return;
     const c=curItems[i.id];
-    if(c&&c.status!=='pending')out.items.push(c);
-    else out.items.push(Object.assign({},i,{status:'pending'}));
+    if(c)out.items.push(Object.assign({},i,{status:c.status||'applied'}));   // 既存：status は管理者管理
+    else out.items.push(Object.assign({},i,{status:'applied'}));            // 新規：即時に報酬へ加算
     seen[i.id]=1;
   });
-  Object.keys(curItems).forEach(id=>{if(!seen[id]&&curItems[id].status==='approved')out.items.push(curItems[id])});
   return out;
 }
 /* state を破壊的に更新して返す。
@@ -711,13 +711,13 @@ function applyChangesTo(state,ch,opts){
         if(key==='adjustments'){
           const cur=state.adjustments[mk]&&state.adjustments[mk][k];
           if(scope){
-            // スタッフ本人：確定済みの月は申請の追加・変更不可（確定＝申請も締め）
+            // スタッフ本人：確定済みの月はイレギュラー報酬の追加・変更不可（確定＝締め）
             if(lockedBase[mk]&&lockedBase[mk][k])return;
-            // 承認欄と各申請の status は変えられない。承認済みは消せない
+            // 管理者調整欄と各項目の status（取消）は変えられない
             if(v===null){if(cur&&(cur.enabled||(cur.items||[]).some(i=>i&&i.status==='approved')))return;}
             else v=_staffAdjustment(cur,v);
           }else if(v!==null&&cur){
-            // 管理者：スタッフが同時に追加した申請を取りこぼさない（申請は却下で消す。削除はしない）
+            // 管理者：スタッフが同時に追加したイレギュラー報酬を取りこぼさない（管理者は取消で無効化する。削除はしない）
             const have={};(v.items||[]).forEach(i=>{if(i&&i.id)have[i.id]=1});
             const missing=(cur.items||[]).filter(i=>i&&i.id&&!have[i.id]);
             if(missing.length)v=Object.assign({},v,{items:(v.items||[]).concat(missing)});
@@ -1420,7 +1420,8 @@ function renderInput(){
       <div class="summary-item"><div class="label">セッション数</div><div class="value">${calc.totalSessions}回</div></div>
       <div class="summary-item"><div class="label">対応ゲスト</div><div class="value">${calc.activeClients}名</div></div>
       <div class="summary-item wide" style="background:#fef9e7"><div class="label">セッション売上</div><div class="value" style="font-size:20px;color:#b7791f">¥${calc.totalRevenue.toLocaleString()}</div></div>
-      <div class="summary-item wide highlight"><div class="label">合計報酬額</div><div class="value" style="font-size:26px">¥${calc.totalReward.toLocaleString()}</div></div>
+      ${(!isMaster&&currentStaffId&&adjTotals(mk,currentStaffId).irregular)?`<div class="summary-item wide" style="background:#eef7f2"><div class="label">イレギュラー報酬</div><div class="value" style="font-size:20px;color:var(--green)">${adjTotals(mk,currentStaffId).irregular>=0?'+':''}¥${adjTotals(mk,currentStaffId).irregular.toLocaleString()}</div></div>`:''}
+      <div class="summary-item wide highlight"><div class="label">合計報酬額</div><div class="value" style="font-size:26px">¥${(calc.totalReward+((!isMaster&&currentStaffId)?adjTotals(mk,currentStaffId).total:0)).toLocaleString()}</div></div>
     </div>`;
 
   renderFilterTabs();
@@ -1576,7 +1577,7 @@ function renderReport(){
     <div class="info-row"><span class="label">NOIC 報酬</span><span class="val" style="color:var(--green)">¥${calc.byService.noic.reward.toLocaleString()}</span></div>
     <div class="info-row"><span class="label">resync 報酬</span><span class="val" style="color:var(--green)">¥${calc.byService.resync.reward.toLocaleString()}</span></div>
     <div class="info-row" style="padding:10px 0;border-top:1px dashed var(--border);margin-top:6px"><span class="label" style="font-weight:700">セッション売上 合計</span><span class="val" style="font-size:16px;color:#b7791f">¥${calc.totalRevenue.toLocaleString()}</span></div>
-    <div class="info-row" style="padding:12px 0;font-size:16px"><span class="label" style="font-size:14px;font-weight:700">合計報酬額</span><span class="val" style="font-size:22px;color:var(--accent)">¥${calc.totalReward.toLocaleString()}</span></div>
+    <div class="info-row" style="padding:12px 0;font-size:16px"><span class="label" style="font-size:14px;font-weight:700">セッション報酬 合計</span><span class="val" style="font-size:22px;color:var(--accent)">¥${calc.totalReward.toLocaleString()}</span></div>
   </div>`;
   // 報酬額の調整（スタッフ別・管理者のみ操作可。スタッフには自分の調整結果のみ表示）
   if(isMaster){
@@ -1593,16 +1594,16 @@ function renderReport(){
       const amt=at.manual;
       const finalT=base+at.total;
       grand+=finalT;
-      const pendingN=a.items.filter(i=>i.status==='pending').length;
-      html+=`<div style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;background:${(a.enabled||at.approved)?'#fef9e7':'#fff'}">
+      const irrN=a.items.filter(i=>adjItemActive(i)).length;
+      html+=`<div style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;background:${(a.enabled||at.irregular)?'#fef9e7':'#fff'}">
         <div style="display:flex;justify-content:space-between;align-items:center">
-          <span style="font-weight:700">${esc(st.name)}${pendingN?` <span style="font-size:11px;background:#c0392b;color:#fff;border-radius:10px;padding:1px 8px;margin-left:6px">申請 ${pendingN}件</span>`:''}</span>
-          <span style="font-size:13px">報酬 <b style="color:var(--green)">¥${base.toLocaleString()}</b></span>
+          <span style="font-weight:700">${esc(st.name)}${irrN?` <span style="font-size:11px;background:var(--green);color:#fff;border-radius:10px;padding:1px 8px;margin-left:6px">イレギュラー ${irrN}件</span>`:''}</span>
+          <span style="font-size:13px">セッション報酬 <b style="color:var(--green)">¥${base.toLocaleString()}</b></span>
         </div>
         ${a.items.length?`<div style="margin:8px 0;padding:8px;background:#fff;border-radius:6px;border:1px solid var(--border)">
-          <div style="font-size:12px;font-weight:700;margin-bottom:6px">🙋 スタッフからの申請（イレギュラー対応）</div>
+          <div style="font-size:12px;font-weight:700;margin-bottom:6px">💴 イレギュラー報酬（セッション以外・スタッフ入力）</div>
           ${a.items.map(i=>adjItemRow(mk,st.id,i,true)).join('')}
-          <div style="display:flex;justify-content:space-between;font-size:12px;margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)"><span>承認済み合計</span><span style="font-weight:700;color:var(--green)">${at.approved>=0?'+':''}¥${at.approved.toLocaleString()}</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)"><span>イレギュラー報酬 合計</span><span style="font-weight:700;color:var(--green)">${at.irregular>=0?'+':''}¥${at.irregular.toLocaleString()}</span></div>
         </div>`:''}
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:6px 0;font-size:13px">
           <input type="checkbox" ${a.enabled?'checked':''} onchange="toggleAdjustment('${mk}','${st.id}',this.checked)" style="width:16px;height:16px;cursor:pointer">
@@ -1615,19 +1616,19 @@ function renderReport(){
           </div>
           <button class="btn btn-primary" onclick="saveAdjustment('${mk}','${st.id}')">${esc(st.name)}の調整を保存</button>
         </div>
-        ${(a.enabled||at.approved)?`<div style="margin-top:8px;padding:8px;background:#fff;border-radius:6px;border:1px solid var(--border);font-size:13px">
-          <div style="display:flex;justify-content:space-between"><span>調整前</span><span>¥${base.toLocaleString()}</span></div>
-          ${at.approved?`<div style="display:flex;justify-content:space-between"><span>承認済み申請</span><span style="color:${at.approved>=0?'var(--green)':'#c0392b'}">${at.approved>=0?'+':''}¥${at.approved.toLocaleString()}</span></div>`:''}
+        ${(a.enabled||at.irregular)?`<div style="margin-top:8px;padding:8px;background:#fff;border-radius:6px;border:1px solid var(--border);font-size:13px">
+          <div style="display:flex;justify-content:space-between"><span>セッション報酬</span><span>¥${base.toLocaleString()}</span></div>
+          ${at.irregular?`<div style="display:flex;justify-content:space-between"><span>イレギュラー報酬</span><span style="color:${at.irregular>=0?'var(--green)':'#c0392b'}">${at.irregular>=0?'+':''}¥${at.irregular.toLocaleString()}</span></div>`:''}
           ${a.enabled?`<div style="display:flex;justify-content:space-between"><span>管理者調整</span><span style="color:${amt>=0?'var(--green)':'#c0392b'}">${amt>=0?'+':''}¥${amt.toLocaleString()}</span></div>`:''}
           ${a.enabled&&a.reason?`<div style="font-size:11px;color:var(--text-light);margin-top:4px">理由: ${esc(a.reason)}</div>`:''}
-          <div style="display:flex;justify-content:space-between;font-weight:700;color:var(--accent);margin-top:6px;padding-top:6px;border-top:1px solid var(--border)"><span>調整後支給額</span><span>¥${finalT.toLocaleString()}</span></div>
+          <div style="display:flex;justify-content:space-between;font-weight:700;color:var(--accent);margin-top:6px;padding-top:6px;border-top:1px solid var(--border)"><span>支給額</span><span>¥${finalT.toLocaleString()}</span></div>
         </div>`:''}
       </div>`;
     });
-    html+=`<div style="display:flex;justify-content:space-between;font-weight:700;font-size:15px;padding:10px 4px 2px;border-top:2px solid var(--border);margin-top:4px"><span>調整後 総支給額</span><span style="color:var(--accent)">¥${grand.toLocaleString()}</span></div>
+    html+=`<div style="display:flex;justify-content:space-between;font-weight:700;font-size:15px;padding:10px 4px 2px;border-top:2px solid var(--border);margin-top:4px"><span>総支給額</span><span style="color:var(--accent)">¥${grand.toLocaleString()}</span></div>
     </div>`;
   }else{
-    // スタッフ：イレギュラー対応の申請（自分の分だけ）＋ 適用結果
+    // スタッフ：イレギュラー報酬（セッション以外）の一覧 ＋ 合計報酬額
     const sid=currentStaffId||'__none';
     const a=getAdjustment(mk,sid);
     const at=adjTotals(mk,sid);
@@ -1635,16 +1636,15 @@ function renderReport(){
     const finalT=calc.totalReward+at.total;
     const lockedMine=isLockedForStaff(mk,sid);
     html+=`<div style="margin-top:16px;padding:14px;border:2px dashed var(--border);border-radius:10px;background:#fafafa">
-      <div style="font-weight:700;margin-bottom:4px">🙋 イレギュラー対応</div>
-      <div style="font-size:11px;color:var(--text-light);margin-bottom:10px">${lockedMine?`${monthDisplay(mk)}は確定済みです。申請の追加・変更はできません（必要な場合は管理者へ）。`:`${monthDisplay(mk)}のイレギュラー対応は、入力タブの「🔒 ${monthDisplay(mk)} を確定する」から入力します。管理者が承認すると支給額に加算されます。`}</div>
-      ${a.items.length?`<div style="margin-bottom:4px">${a.items.map(i=>adjItemRow(mk,sid,i,false)).join('')}</div>`:`<div style="font-size:12px;color:var(--text-light)">${monthDisplay(mk)}の申請はありません</div>`}
-      ${(a.enabled||at.approved)?`<div style="margin-top:12px;padding:10px;background:#fff;border-radius:6px;border:1px solid var(--border);font-size:13px">
-        <div style="display:flex;justify-content:space-between"><span>調整前</span><span>¥${calc.totalReward.toLocaleString()}</span></div>
-        ${at.approved?`<div style="display:flex;justify-content:space-between"><span>承認済み申請</span><span style="color:${at.approved>=0?'var(--green)':'#c0392b'}">${at.approved>=0?'+':''}¥${at.approved.toLocaleString()}</span></div>`:''}
-        ${a.enabled?`<div style="display:flex;justify-content:space-between"><span>管理者調整</span><span style="color:${amt>=0?'var(--green)':'#c0392b'}">${amt>=0?'+':''}¥${amt.toLocaleString()}</span></div>`:''}
-        ${a.enabled&&a.reason?`<div style="font-size:11px;color:var(--text-light);margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)">理由: ${esc(a.reason)}</div>`:''}
-        <div style="font-size:18px;font-weight:700;color:var(--accent);margin-top:10px;padding-top:10px;border-top:2px solid var(--border);display:flex;justify-content:space-between"><span style="font-size:14px">調整後支給額</span><span>¥${finalT.toLocaleString()}</span></div>
-      </div>`:''}
+      <div style="font-weight:700;margin-bottom:4px">💴 イレギュラー報酬（セッション以外）</div>
+      <div style="font-size:11px;color:var(--text-light);margin-bottom:10px">${lockedMine?`${monthDisplay(mk)}は確定済みです。追加・変更はできません（必要な場合は管理者へ）。`:`追加・削除は入力タブの「🔒 ${monthDisplay(mk)} を確定する」から行います。`}</div>
+      ${a.items.length?`<div style="margin-bottom:4px">${a.items.map(i=>adjItemRow(mk,sid,i,false)).join('')}</div>`:`<div style="font-size:12px;color:var(--text-light)">${monthDisplay(mk)}のイレギュラー報酬はありません</div>`}
+    </div>
+    <div style="margin-top:12px;padding:12px 14px;background:#fff;border-radius:10px;border:1px solid var(--border);font-size:13px">
+      <div style="display:flex;justify-content:space-between;padding:3px 0"><span>セッション報酬</span><span>¥${calc.totalReward.toLocaleString()}</span></div>
+      <div style="display:flex;justify-content:space-between;padding:3px 0"><span>イレギュラー報酬</span><span style="color:${at.irregular>=0?'var(--green)':'#c0392b'}">${at.irregular>=0?'+':''}¥${at.irregular.toLocaleString()}</span></div>
+      ${a.enabled?`<div style="display:flex;justify-content:space-between;padding:3px 0"><span>管理者調整${a.reason?`<span style="font-size:11px;color:var(--text-light)">（${esc(a.reason)}）</span>`:''}</span><span style="color:${amt>=0?'var(--green)':'#c0392b'}">${amt>=0?'+':''}¥${amt.toLocaleString()}</span></div>`:''}
+      <div style="font-size:18px;font-weight:700;color:var(--accent);margin-top:8px;padding-top:8px;border-top:2px solid var(--border);display:flex;justify-content:space-between"><span style="font-size:14px">合計報酬額</span><span>¥${finalT.toLocaleString()}</span></div>
     </div>`;
   }
   html+=`</div>`;
@@ -1660,68 +1660,68 @@ function getAdjustment(mk,staffKey){
   if(!Array.isArray(a.items))a.items=[];
   return a;
 }
-/* 適用額の内訳：manual=管理者調整（適用時のみ）、approved=承認済み申請の合計、pending=申請中の合計 */
+/* イレギュラー報酬の項目が有効か（管理者が取り消したものは除く。旧データの pending/approved は有効扱い） */
+function adjItemActive(i){return !(i&&(i.status==='rejected'||i.status==='cancelled'))}
+/* 内訳：manual=管理者調整（適用時のみ）、irregular=イレギュラー報酬の合計、total=両方 */
 function adjTotals(mk,staffKey){
   const a=getAdjustment(mk,staffKey);
   const manual=a.enabled?(Number(a.amount)||0):0;
-  let approved=0,pending=0;
-  a.items.forEach(i=>{const v=Number(i.amount)||0;if(i.status==='approved')approved+=v;else if(i.status==='pending')pending+=v});
-  return{manual,approved,pending,total:manual+approved};
+  let irregular=0;
+  a.items.forEach(i=>{if(adjItemActive(i))irregular+=Number(i.amount)||0});
+  return{manual,irregular,total:manual+irregular,approved:irregular,pending:0};
 }
 function adjItemRow(mk,staffKey,i,admin){
   const v=Number(i.amount)||0;
-  const st=i.status==='approved'?'<span style="font-size:11px;background:var(--green);color:#fff;border-radius:10px;padding:1px 8px">承認済み</span>'
-    :i.status==='rejected'?'<span style="font-size:11px;background:#999;color:#fff;border-radius:10px;padding:1px 8px">却下</span>'
-    :'<span style="font-size:11px;background:#e67e22;color:#fff;border-radius:10px;padding:1px 8px">申請中</span>';
+  const cancelled=!adjItemActive(i);
+  const st=cancelled?'<span style="font-size:11px;background:#999;color:#fff;border-radius:10px;padding:1px 8px">管理者が取消</span>':'';
   let btns='';
   if(admin){
-    if(i.status==='pending')btns=`<button class="btn btn-primary btn-sm" onclick="setAdjustmentItemStatus('${mk}','${staffKey}','${i.id}','approved')">承認</button> <button class="btn btn-danger btn-sm" onclick="setAdjustmentItemStatus('${mk}','${staffKey}','${i.id}','rejected')">却下</button>`;
-    else btns=`<button class="btn btn-sm" style="background:#eee" onclick="setAdjustmentItemStatus('${mk}','${staffKey}','${i.id}','pending')">申請中に戻す</button>`;
-  }else if(i.status!=='approved'&&!isLockedForStaff(mk,staffKey)){
-    btns=`<button class="btn btn-sm" style="background:#eee" onclick="withdrawAdjustmentItem('${mk}','${i.id}')">${i.status==='rejected'?'削除':'取り下げ'}</button>`;
+    btns=cancelled?`<button class="btn btn-sm" style="background:#eee" onclick="setAdjustmentItemStatus('${mk}','${staffKey}','${i.id}','applied')">取消を戻す</button>`
+      :`<button class="btn btn-sm" style="background:#eee" onclick="setAdjustmentItemStatus('${mk}','${staffKey}','${i.id}','cancelled')">取り消す</button>`;
+  }else if(!cancelled&&!isLockedForStaff(mk,staffKey)){
+    btns=`<button class="btn btn-sm" style="background:#eee" onclick="withdrawAdjustmentItem('${mk}','${i.id}')">削除</button>`;
   }
-  return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px dashed var(--border);font-size:13px">
+  return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px dashed var(--border);font-size:13px;${cancelled?'opacity:.55':''}">
     <div style="flex:1;min-width:0"><div>${esc(i.reason||'（内容なし）')}</div><div style="font-size:11px;color:var(--text-light)">${i.createdAt?new Date(i.createdAt).toLocaleDateString('ja-JP'):''} ${st}</div></div>
-    <div style="font-weight:700;color:${v>=0?'var(--green)':'#c0392b'};white-space:nowrap">${v>=0?'+':''}¥${v.toLocaleString()}</div>
+    <div style="font-weight:700;color:${v>=0?'var(--green)':'#c0392b'};white-space:nowrap;${cancelled?'text-decoration:line-through':''}">${v>=0?'+':''}¥${v.toLocaleString()}</div>
     <div style="white-space:nowrap">${btns}</div>
   </div>`;
 }
-/* スタッフ：イレギュラー対応を申請する（承認は管理者） */
+/* スタッフ：イレギュラー報酬（セッション以外の報酬）を追加する。追加した時点で報酬に加算される */
 function requestAdjustment(mk,fromModal){
-  if(isMaster||!currentStaffId){alert('申請はスタッフとしてログインして行ってください');return}
-  if(isLockedForStaff(mk,currentStaffId)){alert(monthDisplay(mk)+'は確定済みのため、イレギュラー対応の追加はできません。管理者にご連絡ください。');return}
+  if(isMaster||!currentStaffId){alert('スタッフとしてログインして行ってください');return}
+  if(isLockedForStaff(mk,currentStaffId)){alert(monthDisplay(mk)+'は確定済みのため、イレギュラー報酬の追加はできません。管理者にご連絡ください。');return}
   const amt=parseInt((document.getElementById('reqAmount')||{}).value)||0;
   const reason=((document.getElementById('reqReason')||{}).value||'').trim();
   if(!amt){alert('金額を入力してください');return}
   if(!reason){alert('内容（ゲスト名・理由）を入力してください');return}
-  if(!fromModal&&!confirm(`${monthDisplay(mk)}のイレギュラー対応として申請しますか？\n${reason}\n${amt>=0?'+':''}¥${amt.toLocaleString()}`))return;
   const a=getAdjustment(mk,currentStaffId);
-  a.items.push({id:'adj_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),amount:amt,reason,createdAt:Date.now(),status:'pending'});
+  a.items.push({id:'adj_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),amount:amt,reason,createdAt:Date.now(),status:'applied'});
   save();
-  if(fromModal){openConfirmMonthModal(mk);toast('✅ 追加しました（確定時に一緒に申請されます）');}
-  else{render();toast('✅ 申請しました（管理者の承認待ち）');}
+  if(fromModal)openConfirmMonthModal(mk);else render();
+  toast('✅ イレギュラー報酬を追加しました');
 }
 function withdrawAdjustmentItem(mk,itemId){
   if(isMaster||!currentStaffId)return;
   if(isLockedForStaff(mk,currentStaffId)){alert(monthDisplay(mk)+'は確定済みのため変更できません。管理者にご連絡ください。');return}
   const a=getAdjustment(mk,currentStaffId);
   const i=a.items.find(x=>x.id===itemId);
-  if(!i||i.status==='approved')return;
-  if(!confirm('この申請を取り下げますか？'))return;
+  if(!i)return;
+  if(!confirm('このイレギュラー報酬を削除しますか？\n'+(i.reason||'')+'  '+((Number(i.amount)||0)>=0?'+':'')+'¥'+(Number(i.amount)||0).toLocaleString()))return;
   a.items=a.items.filter(x=>x.id!==itemId);
   save();
   if(modalOpen())openConfirmMonthModal(mk);else render();
 }
-/* 管理者：申請を承認／却下する */
+/* 管理者：イレギュラー報酬を取り消す／戻す（確定後でも可） */
 function setAdjustmentItemStatus(mk,staffKey,itemId,status){
-  if(!isMaster){alert('承認は管理者のみ可能です');return}
+  if(!isMaster){alert('管理者のみ可能です');return}
   const a=getAdjustment(mk,staffKey);
   const i=a.items.find(x=>x.id===itemId);
   if(!i)return;
+  if(status==='cancelled'&&!confirm('このイレギュラー報酬を取り消しますか？（支給額から除外されます）'))return;
   i.status=status;
-  if(status!=='pending'){i.decidedAt=Date.now();}else{delete i.decidedAt;}
+  if(status==='cancelled'){i.decidedAt=Date.now();}else{delete i.decidedAt;}
   save();render();
-  if(status==='approved')toast('✅ 承認しました（支給額に加算）');
 }
 function toast(msg){
   const t=document.createElement('div');
@@ -1811,8 +1811,9 @@ function renderSettings(){
     D.config.staff.forEach(s=>{
       const cl=D.clients.filter(c=>c.staffId===s.id);
       const calc=calcMonth(mk,cl);
-      grandTotal+=calc.totalReward;
-      staffSummaryHtml+=`<div class="info-row"><span><b>${esc(s.name)}</b><br><span style="font-size:11px;color:var(--text-light)">${calc.activeClients}名 / ${calc.totalSessions}回</span></span><span class="val" style="color:var(--green);font-size:16px">¥${calc.totalReward.toLocaleString()}</span></div>`;
+      const adjT=adjTotals(mk,s.id).total;
+      grandTotal+=calc.totalReward+adjT;
+      staffSummaryHtml+=`<div class="info-row"><span><b>${esc(s.name)}</b><br><span style="font-size:11px;color:var(--text-light)">${calc.activeClients}名 / ${calc.totalSessions}回${adjT?`　イレギュラー・調整 ${adjT>=0?'+':''}¥${adjT.toLocaleString()}`:''}</span></span><span class="val" style="color:var(--green);font-size:16px">¥${(calc.totalReward+adjT).toLocaleString()}</span></div>`;
     });
     staffSummaryHtml+=`<div class="info-row" style="border-top:2px solid var(--border);padding-top:10px;margin-top:6px"><span style="font-weight:700">合計</span><span class="val" style="color:var(--accent);font-size:18px">¥${grandTotal.toLocaleString()}</span></div>`;
     staffSummaryHtml+='</div>';
@@ -1983,7 +1984,7 @@ function confirmMyMonth(){
   }
   openConfirmMonthModal(mk);
 }
-/* 確定モーダル：回数の確認 → イレギュラー対応の入力 → 確定 を1画面で行う */
+/* 確定モーダル：セッション回数の確認 → イレギュラー報酬の入力 → 確定 を1画面で行う */
 function openConfirmMonthModal(mk){
   const sid=currentStaffId;
   const mine=D.clients.filter(c=>c.staffId===sid);
@@ -1991,49 +1992,57 @@ function openConfirmMonthModal(mk){
   const a=getAdjustment(mk,sid);
   const at=adjTotals(mk,sid);
   const active=calc.details.filter(d=>d.count>0);
+  const total=calc.totalReward+at.total;
   openModal(`
     <div class="modal-header"><h2>🔒 ${monthDisplay(mk)} の報酬を確定</h2><button class="modal-close" onclick="closeModal()">×</button></div>
-    <div style="font-size:12px;color:var(--text-light);margin-bottom:12px">① 回数を確認 → ② イレギュラー対応があれば追加 → ③ 確定。<b>確定後はセッション回数もイレギュラー対応も変更できません</b>（解除は管理者のみ）。</div>
+    <div style="font-size:12px;color:var(--text-light);margin-bottom:12px">① セッション回数を確認 → ② セッション以外の報酬（イレギュラー）があれば追加 → ③ 内容に問題なければ確定。<b>確定後は変更できません</b>（解除は管理者のみ）。</div>
     <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;background:#fff">
-      <div style="font-weight:700;font-size:13px;margin-bottom:6px">① セッション回数の確認</div>
-      ${active.length?`<div style="max-height:180px;overflow-y:auto;font-size:13px">${active.map(d=>`<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed var(--border)"><span>${esc(d.client.name)}</span><span>${d.count}回</span></div>`).join('')}</div>`:'<div style="font-size:13px;color:var(--text-light)">この月のセッション入力はありません</div>'}
-      <div style="display:flex;justify-content:space-between;font-weight:700;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)"><span>合計 ${calc.totalSessions}回</span><span style="color:var(--green)">報酬 ¥${calc.totalReward.toLocaleString()}</span></div>
+      <div style="font-weight:700;font-size:13px;margin-bottom:6px">① セッション報酬</div>
+      ${active.length?`<div style="max-height:180px;overflow-y:auto;font-size:13px">${active.map(d=>`<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed var(--border)"><span>${esc(d.client.name)}</span><span>${d.count}回　<b>¥${d.reward.toLocaleString()}</b></span></div>`).join('')}</div>`:'<div style="font-size:13px;color:var(--text-light)">この月のセッション入力はありません</div>'}
+      <div style="display:flex;justify-content:space-between;font-weight:700;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)"><span>合計 ${calc.totalSessions}回</span><span style="color:var(--green)">¥${calc.totalReward.toLocaleString()}</span></div>
     </div>
     <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;background:#fafafa">
-      <div style="font-weight:700;font-size:13px;margin-bottom:4px">② イレギュラー対応（あれば）</div>
-      <div style="font-size:11px;color:var(--text-light);margin-bottom:8px">通常の報酬計算に含まれない対応を入力してください。管理者が承認すると支給額に加算されます。無ければそのまま③へ。</div>
-      ${a.items.length?`<div style="margin-bottom:8px">${a.items.map(i=>adjItemRow(mk,sid,i,false)).join('')}</div>`:''}
+      <div style="font-weight:700;font-size:13px;margin-bottom:4px">② イレギュラー報酬（セッション以外・あれば）</div>
+      <div style="font-size:11px;color:var(--text-light);margin-bottom:8px">代行対応など、セッション回数に含まれない報酬を入力してください。追加した分はそのまま合計に加算されます。無ければそのまま③へ。</div>
+      ${a.items.length?`<div style="margin-bottom:8px">${a.items.map(i=>adjItemRow(mk,sid,i,false)).join('')}
+        <div style="display:flex;justify-content:space-between;font-size:12px;margin-top:6px;font-weight:700"><span>イレギュラー報酬 合計</span><span style="color:var(--green)">${at.irregular>=0?'+':''}¥${at.irregular.toLocaleString()}</span></div></div>`:''}
       <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px;margin-bottom:8px">
         <div><label style="font-size:11px;display:block;margin-bottom:3px">金額（円）</label><input type="number" id="reqAmount" placeholder="例: 10000" style="width:100%"></div>
         <div><label style="font-size:11px;display:block;margin-bottom:3px">内容（ゲスト名・理由）</label><input type="text" id="reqReason" placeholder="例: ◯◯様 代行対応 1回" style="width:100%"></div>
       </div>
       <button class="btn btn-sm" style="background:#fff;border:1px solid var(--green);color:var(--green)" onclick="requestAdjustment('${mk}',true)">＋ 追加する</button>
-      ${at.pending||at.approved?`<div style="font-size:12px;margin-top:8px;color:var(--text-light)">申請合計 ${(at.pending+at.approved)>=0?'+':''}¥${(at.pending+at.approved).toLocaleString()}（承認後に加算）</div>`:''}
     </div>
     <div style="border:1px solid var(--border);border-radius:10px;padding:12px;background:#fff">
       <div style="font-weight:700;font-size:13px;margin-bottom:8px">③ 確定</div>
-      <div style="font-size:12px;color:var(--text-light);margin-bottom:10px">確定時点の報酬額が保存されます。以後コース単価を変えても確定分は変わりません。</div>
-      <button class="btn btn-lock" onclick="finalizeMyMonth('${mk}')">🔒 この内容で ${monthDisplay(mk)} を確定する</button>
+      <div style="font-size:13px;margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;padding:2px 0"><span>セッション報酬</span><span>¥${calc.totalReward.toLocaleString()}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:2px 0"><span>イレギュラー報酬</span><span>${at.irregular>=0?'+':''}¥${at.irregular.toLocaleString()}</span></div>
+        ${a.enabled?`<div style="display:flex;justify-content:space-between;padding:2px 0"><span>管理者調整</span><span>${at.manual>=0?'+':''}¥${at.manual.toLocaleString()}</span></div>`:''}
+        <div style="display:flex;justify-content:space-between;font-weight:700;font-size:16px;color:var(--accent);margin-top:6px;padding-top:6px;border-top:1px solid var(--border)"><span>${monthDisplay(mk)} 合計報酬額</span><span>¥${total.toLocaleString()}</span></div>
+      </div>
+      <div style="font-size:11px;color:var(--text-light);margin-bottom:10px">確定時点の報酬額が保存されます。以後コース単価を変えても確定分は変わりません。</div>
+      <button class="btn btn-lock" onclick="finalizeMyMonth('${mk}')">🔒 この内容で ${monthDisplay(mk)} の報酬を確定する</button>
       <button class="btn" style="background:#eee;margin-top:8px" onclick="closeModal()">キャンセル（あとで確定する）</button>
     </div>`);
 }
 function finalizeMyMonth(mk){
   if(isMaster||!currentStaffId)return;
   if(isLockedForStaff(mk,currentStaffId)){closeModal();render();return}
-  // 入力途中のイレギュラー対応があれば先に扱う
+  // 入力途中のイレギュラー報酬があれば先に扱う
   const amt=parseInt((document.getElementById('reqAmount')||{}).value)||0;
   const reason=((document.getElementById('reqReason')||{}).value||'').trim();
   if(amt||reason){
-    if(!(amt&&reason)){alert('イレギュラー対応の入力が途中です。金額と内容の両方を入れて「＋ 追加する」を押すか、両方を空にしてください');return}
-    if(!confirm('入力中のイレギュラー対応を追加してから確定します。よろしいですか？\n'+reason+'  '+(amt>=0?'+':'')+'¥'+amt.toLocaleString()))return;
+    if(!(amt&&reason)){alert('イレギュラー報酬の入力が途中です。金額と内容の両方を入れて「＋ 追加する」を押すか、両方を空にしてください');return}
+    if(!confirm('入力中のイレギュラー報酬を追加してから確定します。よろしいですか？\n'+reason+'  '+(amt>=0?'+':'')+'¥'+amt.toLocaleString()))return;
     const a=getAdjustment(mk,currentStaffId);
-    a.items.push({id:'adj_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),amount:amt,reason,createdAt:Date.now(),status:'pending'});
+    a.items.push({id:'adj_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),amount:amt,reason,createdAt:Date.now(),status:'applied'});
   }
-  if(!confirm(monthDisplay(mk)+'のあなたの分を確定しますか？\n確定後はセッション回数・イレギュラー対応の追加や変更ができません（解除は管理者のみ）。'))return;
+  const total=calcMonth(mk,D.clients.filter(c=>c.staffId===currentStaffId)).totalReward+adjTotals(mk,currentStaffId).total;
+  if(!confirm(monthDisplay(mk)+'の報酬（合計 ¥'+total.toLocaleString()+'）を確定しますか？\n確定後はセッション回数・イレギュラー報酬の追加や変更ができません（解除は管理者のみ）。'))return;
   if(!D.lockedMonths[mk])D.lockedMonths[mk]={};
   D.lockedMonths[mk][currentStaffId]=Date.now();
   snapshotStaffMonth(mk,currentStaffId);
-  save();closeModal();render();toast('🔒 '+monthDisplay(mk)+'を確定しました');
+  save();closeModal();render();toast('🔒 '+monthDisplay(mk)+'の報酬を確定しました');
 }
 /* 管理者が「スタッフ別」に確定を解除する */
 function unlockStaffMonth(mk,staffId){
