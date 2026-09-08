@@ -1633,11 +1633,11 @@ function renderReport(){
     const finalT=calc.totalReward+at.total;
     html+=`<div style="margin-top:16px;padding:14px;border:2px dashed var(--border);border-radius:10px;background:#fafafa">
       <div style="font-weight:700;margin-bottom:4px">🙋 イレギュラー対応の申請</div>
-      <div style="font-size:11px;color:var(--text-light);margin-bottom:10px">${monthDisplay(mk)}／通常の報酬計算に含まれない対応（例: 特別対応 1回 10,000円）を申請します。管理者が承認すると支給額に加算されます。</div>
+      <div style="font-size:11px;color:var(--text-light);margin-bottom:10px">${monthDisplay(mk)}／通常の報酬計算に含まれない対応（例: 代行対応 1回 10,000円）を申請します。管理者が承認すると支給額に加算されます。</div>
       ${a.items.length?`<div style="margin-bottom:10px">${a.items.map(i=>adjItemRow(mk,sid,i,false)).join('')}</div>`:''}
       <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px;margin-bottom:8px">
         <div><label style="font-size:11px;display:block;margin-bottom:3px">金額（円）</label><input type="number" id="reqAmount" placeholder="例: 10000" style="width:100%"></div>
-        <div><label style="font-size:11px;display:block;margin-bottom:3px">内容（ゲスト名・理由）</label><input type="text" id="reqReason" placeholder="例: 中川様 特別対応 1回" style="width:100%"></div>
+        <div><label style="font-size:11px;display:block;margin-bottom:3px">内容（ゲスト名・理由）</label><input type="text" id="reqReason" placeholder="例: ◯◯様 代行対応 1回" style="width:100%"></div>
       </div>
       <button class="btn btn-primary" onclick="requestAdjustment('${mk}')">申請する</button>
       ${(a.enabled||at.approved)?`<div style="margin-top:12px;padding:10px;background:#fff;border-radius:6px;border:1px solid var(--border);font-size:13px">
